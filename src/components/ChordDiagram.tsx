@@ -31,9 +31,9 @@ const ChordDiagram: React.FC = () => {
   // Refs and state
   const svgRef = useRef<SVGSVGElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 800 });
-  const { playMajorChord, playMinorChord, initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
+  const { initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
   const [isInitialized, setIsInitialized] = useState(false);
-  const [showLoading, setShowLoading] = useState(true);
+  const [showLoading, setShowLoading] = useState(false); // No samples to load
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [playingNode, setPlayingNode] = useState<string | null>(null);
   const [playbackInterval, setPlaybackInterval] = useState<number | null>(null);
@@ -96,6 +96,21 @@ const ChordDiagram: React.FC = () => {
     stopAllNotes(); // Stop any currently playing notes
   }, [playbackInterval, stopAllNotes]);
 
+  const handleEnableAudio = async () => {
+    try {
+      await startContext();
+      setIsAudioEnabled(true);
+      console.log('Audio enabled and context started.');
+    } catch (error) {
+      console.error('Failed to enable audio:', error);
+    }
+  };
+
+  const handleBackgroundClick = () => {
+    setSelectedNode(null);
+    stopPlayback();
+  };
+
   // Function to start continuous playback
   const startContinuousPlayback = useCallback(async (node: ChordNode) => {
     try {
@@ -107,16 +122,10 @@ const ChordDiagram: React.FC = () => {
       const intervals = chordIntervals[node.type];
       if (!intervals) {
         console.warn(`No intervals defined for chord type: ${node.type}`);
-        // Fallback to major/minor or do nothing
-        if (node.type.includes('major')) {
-          await playMajorChord(node.root as Note);
-        } else if (node.type.includes('minor')) {
-          await playMinorChord(node.root as Note);
-        }
         return;
       }
 
-      console.log(`Playing ${node.type} chord with root ${node.root}`);
+      console.log(`Playing ${node.type} string chord with root ${node.root}`);
       await playChord(node.root as Note, intervals);
 
       // Set up continuous playback
@@ -126,33 +135,14 @@ const ChordDiagram: React.FC = () => {
         } catch (error) {
           console.error('Failed to play chord in interval:', error);
         }
-      }, 2000); // Replay every 2 seconds
+      }, 4000); // Longer interval for sustained string sound
 
       setPlaybackInterval(interval);
       setPlayingNode(node.id);
     } catch (error) {
       console.error('Failed to start chord playback:', error);
     }
-  }, [playMajorChord, playMinorChord, isInitialized, initializePiano, playChord]);
-
-  // Handle background click
-  const handleBackgroundClick = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
-    if (event.target === event.currentTarget) {
-      stopPlayback();
-      setSelectedNode(null);
-    }
-  }, [stopPlayback]);
-
-  // Function to enable audio
-  const handleEnableAudio = async () => {
-    try {
-      await startContext();
-      setIsAudioEnabled(true);
-      console.log('Audio enabled and context started.');
-    } catch (error) {
-      console.error('Failed to enable audio:', error);
-    }
-  };
+  }, [isInitialized, initializePiano, playChord]);
 
   // Handle node click
   const handleNodeClick = useCallback(async (node: ChordNode) => {

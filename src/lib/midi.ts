@@ -1,0 +1,187 @@
+import { useCallback, useMemo, useRef, useState } from 'react';
+
+const NOTE_SEQUENCE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+const FLAT_TO_SHARP: Record<string, string> = {
+  Db: 'C#',
+  Eb: 'D#',
+  Gb: 'F#',
+  Ab: 'G#',
+  Bb: 'A#',
+};
+
+type NoteName = (typeof NOTE_SEQUENCE)[number];
+
+export interface MidiOutputInfo {
+  id: string;
+  name: string;
+  manufacturer?: string;
+}
+
+const normalizeNoteName = (note: string): NoteName | null => {
+  const direct = NOTE_SEQUENCE.find(n => n === note);
+  if (direct) {
+    return direct;
+  }
+
+  const converted = FLAT_TO_SHARP[note];
+  if (converted) {
+    return converted as NoteName;
+  }
+
+  return null;
+};
+
+const baseMidiNumber = (note: NoteName, octave: number): number => {
+  const index = NOTE_SEQUENCE.indexOf(note);
+  return (octave + 1) * 12 + index; // MIDI note formula (C4 -> 60)
+};
+
+const buildMidiChord = (root: string, intervals: number[]): number[] => {
+  const normalized = normalizeNoteName(root);
+  if (!normalized) {
+    return [];
+  }
+
+  const rootMidi = baseMidiNumber(normalized, 4); // Place roots around middle C
+  const noteSet = new Set<number>();
+
+  intervals.forEach(interval => {
+    noteSet.add(rootMidi + interval);
+  });
+
+  // Add a lower root for fullness if it sits within MIDI range
+  const lowerRoot = rootMidi - 12;
+  if (lowerRoot >= 0) {
+    noteSet.add(lowerRoot);
+  }
+
+  return Array.from(noteSet.values()).sort((a, b) => a - b);
+};
+
+export const useWebMidiChordSender = () => {
+  const isSupported = useMemo(
+    () => typeof navigator !== 'undefined' && 'requestMIDIAccess' in navigator,
+    []
+  );
+
+  const midiAccessRef = useRef<WebMidi.MIDIAccess | null>(null);
+  const selectedOutputRef = useRef<WebMidi.MIDIOutput | null>(null);
+  const activeNotesRef = useRef<number[]>([]);
+  const timersRef = useRef<number[]>([]);
+
+  const [hasAccess, setHasAccess] = useState(false);
+  const [outputs, setOutputs] = useState<MidiOutputInfo[]>([]);
+  const [selectedOutputId, setSelectedOutputId] = useState<string | null>(null);
+
+  const stopAll = useCallback(() => {
+    timersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    timersRef.current = [];
+
+    const output = selectedOutputRef.current;
+    if (output && activeNotesRef.current.length > 0) {
+      activeNotesRef.current.forEach(noteNumber => {
+        output.send([0x80, noteNumber, 0]);
+      });
+    }
+    activeNotesRef.current = [];
+  }, []);
+
+  const refreshOutputs = useCallback(() => {
+    const access = midiAccessRef.current;
+    if (!access) return;
+
+    const nextOutputs: MidiOutputInfo[] = [];
+    access.outputs.forEach(output => {
+      nextOutputs.push({
+        id: output.id,
+        name: output.name ?? `Output ${nextOutputs.length + 1}`,
+        manufacturer: output.manufacturer ?? undefined,
+      });
+    });
+    setOutputs(nextOutputs);
+
+    const currentId = selectedOutputRef.current?.id ?? null;
+    if (currentId && !nextOutputs.some(output => output.id === currentId)) {
+      stopAll();
+      selectedOutputRef.current = null;
+      setSelectedOutputId(null);
+    }
+  }, [stopAll]);
+
+  const requestAccess = useCallback(async () => {
+    if (!isSupported) {
+      throw new Error('Web MIDI API is not supported in this browser.');
+    }
+
+    if (midiAccessRef.current) {
+      setHasAccess(true);
+      refreshOutputs();
+      return;
+    }
+
+    const access = await navigator.requestMIDIAccess();
+    midiAccessRef.current = access;
+    setHasAccess(true);
+    access.onstatechange = () => refreshOutputs();
+    refreshOutputs();
+  }, [isSupported, refreshOutputs]);
+
+  const selectOutput = useCallback(
+    (id: string | null) => {
+      if (id === selectedOutputId) {
+        return;
+      }
+
+      stopAll();
+      setSelectedOutputId(id);
+
+      if (!id || !midiAccessRef.current) {
+        selectedOutputRef.current = null;
+        return;
+      }
+
+      selectedOutputRef.current = midiAccessRef.current.outputs.get(id) ?? null;
+    },
+    [selectedOutputId, stopAll]
+  );
+
+  const sendChord = useCallback(
+    (root: string, intervals: number[], durationMs: number = 1500) => {
+      const output = selectedOutputRef.current;
+      if (!output) return;
+
+      const midiNotes = buildMidiChord(root, intervals);
+      if (midiNotes.length === 0) return;
+
+      stopAll();
+
+      midiNotes.forEach(noteNumber => {
+        output.send([0x90, noteNumber, 0x60]);
+      });
+
+      activeNotesRef.current = midiNotes;
+      const releaseDelay = Math.max(50, durationMs);
+      const timerId = window.setTimeout(() => {
+        if (!selectedOutputRef.current) return;
+        midiNotes.forEach(noteNumber => {
+          selectedOutputRef.current?.send([0x80, noteNumber, 0]);
+        });
+        activeNotesRef.current = [];
+      }, releaseDelay);
+
+      timersRef.current.push(timerId);
+    },
+    [stopAll]
+  );
+
+  return {
+    isSupported,
+    hasAccess,
+    outputs,
+    selectedOutputId,
+    requestAccess,
+    selectOutput,
+    sendChord,
+    stopAll,
+  };
+};

@@ -122,7 +122,7 @@ class StringEnsemble {
     return notes;
   }
 
-  async playChord(root: Note, intervals: number[]): Promise<void> {
+  async playChord(root: Note, intervals: number[], durationSeconds: number = 2): Promise<void> {
     if (!this.synth || !this.isInitialized) {
       console.warn('Synthesizer not ready. Please ensure audio is enabled.');
       return;
@@ -135,7 +135,8 @@ class StringEnsemble {
 
       const chordNotes = this.buildExtendedChord(root, intervals);
       console.log('Playing string chord:', chordNotes);
-      this.synth.triggerAttackRelease(chordNotes, '2n'); // Play notes for a half note duration
+      const duration = Math.max(0.1, durationSeconds);
+      this.synth.triggerAttackRelease(chordNotes, duration); // duration in seconds
     } catch (error) {
       console.error('Failed to play chord:', error);
       throw error;
@@ -160,7 +161,7 @@ export function usePianoSynthesizer() {
   const [ensemble] = useState(() => new StringEnsemble());
 
   return {
-    playChord: (root: Note, intervals: number[]) => ensemble.playChord(root, intervals),
+    playChord: (root: Note, intervals: number[], durationSeconds?: number) => ensemble.playChord(root, intervals, durationSeconds),
     initialize: () => ensemble.initialize(),
     startContext: () => ensemble.startContext(),
     stopAllNotes: () => ensemble.stopAllNotes(),

@@ -756,6 +756,7 @@ const ChordDiagram: React.FC = () => {
           </label>
           <div className="mt-2 text-xs text-gray-600">
             Hold: <span className="font-semibold text-gray-700">{displayHoldSeconds}s</span>
+            <span className="ml-1 text-gray-500">({durationMultiplier.toFixed(1)}×)</span>
             <span className="ml-2">Note head: {noteHeadLabel}</span>
             <span className="ml-2">Loop: {(loopIntervalMs / 1000).toFixed(2)}s</span>
           </div>

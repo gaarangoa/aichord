@@ -12,16 +12,6 @@ type ChordQuality =
   | 'sus2' | 'sus4'
   | 'add9' | 'add11';
 
-const NOTE_VALUE_OPTIONS = [
-  { id: 'whole', label: 'Whole note (white)', beats: 4, color: 'white' as const },
-  { id: 'half', label: 'Half note (white)', beats: 2, color: 'white' as const },
-  { id: 'quarter', label: 'Quarter note (black)', beats: 1, color: 'black' as const },
-  { id: 'eighth', label: 'Eighth note (black)', beats: 0.5, color: 'black' as const },
-] as const;
-
-type NoteValueId = typeof NOTE_VALUE_OPTIONS[number]['id'];
-type NoteHeadColor = typeof NOTE_VALUE_OPTIONS[number]['color'];
-
 interface ChordNode {
   id: string;
   x: number;
@@ -91,6 +81,8 @@ const transposeNote = (root: string, offset: number): string | undefined => {
   return SEMITONE_TO_NOTE[semitone];
 };
 
+const OCTAVE_OPTIONS = [-1, 0, 1, 2, 3, 4, 5, 6] as const;
+
 const ChordDiagram: React.FC = () => {
   // Refs and state
   const svgRef = useRef<SVGSVGElement>(null);
@@ -102,9 +94,9 @@ const ChordDiagram: React.FC = () => {
   const [playbackInterval, setPlaybackInterval] = useState<number | null>(null);
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [noteValueId, setNoteValueId] = useState<NoteValueId>('whole');
-  const [tempo, setTempo] = useState<number>(60);
-  const [durationMultiplier, setDurationMultiplier] = useState<number>(1.2);
+  const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
+  const [baseOctave, setBaseOctave] = useState<number>(1);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
   const {
     isSupported: isMidiSupported,
     hasAccess: hasMidiAccess,
@@ -117,28 +109,13 @@ const ChordDiagram: React.FC = () => {
   } = useWebMidiChordSender();
   const [midiError, setMidiError] = useState<string | null>(null);
 
-  const currentNoteValue = useMemo(() => {
-    return NOTE_VALUE_OPTIONS.find(option => option.id === noteValueId) ?? NOTE_VALUE_OPTIONS[0];
-  }, [noteValueId]);
-
-  const baseDurationSeconds = useMemo(() => {
-    const beats = currentNoteValue?.beats ?? 1;
-    const bpm = Math.max(20, tempo);
-    return (60 / bpm) * beats;
-  }, [currentNoteValue, tempo]);
-
   const sustainSeconds = useMemo(() => {
-    return Math.max(0.2, baseDurationSeconds * durationMultiplier);
-  }, [baseDurationSeconds, durationMultiplier]);
+    return Math.max(0.2, noteDurationSeconds);
+  }, [noteDurationSeconds]);
 
   const loopIntervalMs = useMemo(() => {
     return Math.max(300, sustainSeconds * 1000 + 250);
   }, [sustainSeconds]);
-
-  const noteHeadLabel: string = useMemo(() => {
-    const color: NoteHeadColor = currentNoteValue?.color ?? 'white';
-    return color === 'white' ? 'White (open notehead)' : 'Black (filled notehead)';
-  }, [currentNoteValue]);
 
   const displayHoldSeconds = useMemo(() => sustainSeconds.toFixed(2), [sustainSeconds]);
 
@@ -152,26 +129,22 @@ const ChordDiagram: React.FC = () => {
     }
   }, [requestMidiAccess]);
 
-  const handleTempoChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+  const handleDurationChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const next = Number(event.target.value);
     if (Number.isNaN(next)) {
       return;
     }
-    const clamped = Math.max(20, Math.min(240, next));
-    setTempo(clamped);
+    const clamped = Math.max(0.2, Math.min(30, next));
+    setNoteDurationSeconds(clamped);
   }, []);
 
-  const handleNoteValueChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    setNoteValueId(event.target.value as NoteValueId);
-  }, []);
-
-  const handleDurationMultiplierChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+  const handleBaseOctaveChange = useCallback((event: ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
     const next = Number(event.target.value);
     if (Number.isNaN(next)) {
       return;
     }
-    const clamped = Math.max(0.5, Math.min(4, next));
-    setDurationMultiplier(clamped);
+    const clamped = Math.max(-1, Math.min(6, next));
+    setBaseOctave(clamped);
   }, []);
 
   const chordIntervals: Record<ChordQuality, number[]> = {
@@ -266,25 +239,25 @@ const ChordDiagram: React.FC = () => {
       const cycleDelay = loopIntervalMs;
 
       console.log(`Playing ${node.type} string chord with root ${node.root}`);
-      await playChord(node.root as Note, intervals, chordDurationSeconds);
-      sendMidiChord(node.root, intervals, chordDurationMs);
+      await playChord(node.root as Note, intervals, chordDurationSeconds, baseOctave);
+      sendMidiChord(node.root, intervals, chordDurationMs, baseOctave);
 
       // Set up continuous playback
       const interval = window.setInterval(async () => {
         try {
-          await playChord(node.root as Note, intervals, chordDurationSeconds);
-          sendMidiChord(node.root, intervals, chordDurationMs);
+          await playChord(node.root as Note, intervals, chordDurationSeconds, baseOctave);
+          sendMidiChord(node.root, intervals, chordDurationMs, baseOctave);
         } catch (error) {
           console.error('Failed to play chord in interval:', error);
         }
-      }, cycleDelay); // Interval derived from tempo and note length
+      }, cycleDelay); // Interval derived from hold duration
 
       setPlaybackInterval(interval);
       setPlayingNode(node.id);
     } catch (error) {
       console.error('Failed to start chord playback:', error);
     }
-  }, [isInitialized, initializePiano, playChord, sendMidiChord, sustainSeconds, loopIntervalMs]);
+  }, [isInitialized, initializePiano, playChord, sendMidiChord, sustainSeconds, loopIntervalMs, baseOctave]);
 
   // Handle node click
   const handleNodeClick = useCallback(async (node: ChordNode) => {
@@ -353,7 +326,7 @@ const ChordDiagram: React.FC = () => {
     if (playingNode) {
       stopPlayback();
     }
-  }, [tempo, noteValueId, durationMultiplier, playingNode, stopPlayback]);
+  }, [noteDurationSeconds, baseOctave, playingNode, stopPlayback]);
 
   useEffect(() => {
     return () => {
@@ -685,7 +658,15 @@ const ChordDiagram: React.FC = () => {
   return (
     <div className="w-full h-full flex flex-col items-center justify-center bg-white text-gray-900 relative">
       <div className="absolute top-4 left-4 z-40 min-w-[240px] rounded-lg bg-white/90 px-3 py-3 shadow space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">MIDI Output</p>
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Controls</p>
+          <button
+            onClick={() => setIsPanelCollapsed(prev => !prev)}
+            className="rounded-md px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50"
+          >
+            {isPanelCollapsed ? 'Show' : 'Hide'}
+          </button>
+        </div>
         {!isMidiSupported ? (
           <p className="mt-1 text-xs text-red-500">Web MIDI not supported in this browser.</p>
         ) : !hasMidiAccess ? (
@@ -695,72 +676,80 @@ const ChordDiagram: React.FC = () => {
           >
             Connect MIDI
           </button>
-        ) : midiOutputs.length === 0 ? (
-          <p className="mt-1 text-xs text-gray-500">No MIDI outputs detected.</p>
         ) : (
-          <select
-            value={selectedOutputId ?? ''}
-            onChange={(event) => selectMidiOutput(event.target.value || null)}
-            className="mt-2 w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">None (mute MIDI)</option>
-            {midiOutputs.map(output => (
-              <option key={output.id} value={output.id}>
-                {output.manufacturer ? `${output.manufacturer} — ${output.name}` : output.name}
-              </option>
-            ))}
-          </select>
+          <>
+            {midiOutputs.length === 0 ? (
+              <p className="mt-1 text-xs text-gray-500">No MIDI outputs detected.</p>
+            ) : (
+              <select
+                value={selectedOutputId ?? ''}
+                onChange={(event) => selectMidiOutput(event.target.value || null)}
+                className="mt-2 w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="">None (mute MIDI)</option>
+                {midiOutputs.map(output => (
+                  <option key={output.id} value={output.id}>
+                    {output.manufacturer ? `${output.manufacturer} — ${output.name}` : output.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </>
         )}
         {midiError && (
           <p className="mt-1 text-xs text-red-500">{midiError}</p>
         )}
-        <div className="border-t border-gray-200 pt-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>
-          <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-            Tempo (BPM)
-            <input
-              type="number"
-              min={20}
-              max={240}
-              step={1}
-              value={tempo}
-              onChange={handleTempoChange}
-              className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-          <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-            Note Value
-            <select
-              value={noteValueId}
-              onChange={handleNoteValueChange}
-              className="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-            >
-              {NOTE_VALUE_OPTIONS.map(option => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-            Sustain Multiplier
+        {!isPanelCollapsed && (
+          <div className="space-y-3 border-t border-gray-200 pt-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Hold Duration (seconds)
+              <input
+                type="number"
+                min={0.2}
+                max={30}
+                step={0.1}
+                value={noteDurationSeconds}
+                onChange={handleDurationChange}
+                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
             <input
               type="range"
-              min={0.5}
-              max={4}
+              min={0.2}
+              max={30}
               step={0.1}
-              value={durationMultiplier}
-              onChange={handleDurationMultiplierChange}
-              className="mt-1"
+              value={noteDurationSeconds}
+              onChange={handleDurationChange}
+              className="w-full"
             />
-          </label>
-          <div className="mt-2 text-xs text-gray-600">
-            Hold: <span className="font-semibold text-gray-700">{displayHoldSeconds}s</span>
-            <span className="ml-1 text-gray-500">({durationMultiplier.toFixed(1)}×)</span>
-            <span className="ml-2">Note head: {noteHeadLabel}</span>
-            <span className="ml-2">Loop: {(loopIntervalMs / 1000).toFixed(2)}s</span>
+            <div className="text-xs text-gray-600">
+              Hold: <span className="font-semibold text-gray-700">{displayHoldSeconds}s</span>
+              <span className="ml-2">Loop: {(loopIntervalMs / 1000).toFixed(2)}s</span>
+            </div>
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Base Octave
+              <select
+                value={baseOctave}
+                onChange={handleBaseOctaveChange}
+                className="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              >
+                {OCTAVE_OPTIONS.map(option => (
+                  <option key={option} value={option}>{`C${option}`}</option>
+                ))}
+              </select>
+            </label>
+            <input
+              type="range"
+              min={Math.min(...OCTAVE_OPTIONS)}
+              max={Math.max(...OCTAVE_OPTIONS)}
+              step={1}
+              value={baseOctave}
+              onChange={handleBaseOctaveChange}
+              className="w-full"
+            />
           </div>
-        </div>
+        )}
       </div>
       {!isAudioEnabled && (
         <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

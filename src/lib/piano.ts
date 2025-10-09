@@ -3,8 +3,18 @@
 import * as Tone from 'tone';
 import { useState } from 'react';
 
-export type Note = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
-type NoteWithOctave = `${Note}${number}`;
+export type SharpNote = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
+export type Note = SharpNote | 'Db' | 'Eb' | 'Gb' | 'Ab' | 'Bb';
+type NoteWithOctave = `${SharpNote}${number}`;
+
+const SHARP_NOTES: SharpNote[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT_TO_SHARP: Record<string, SharpNote> = {
+  Db: 'C#',
+  Eb: 'D#',
+  Gb: 'F#',
+  Ab: 'G#',
+  Bb: 'A#',
+};
 
 class StringEnsemble {
   private synth: Tone.PolySynth | null = null;
@@ -84,45 +94,46 @@ class StringEnsemble {
     }
   }
 
-  private formatNote(note: Note, octave: number = 2): NoteWithOctave {
-    const flatToSharp: Record<string, string> = {
-      'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#',
-    };
-    const normalizedNote = flatToSharp[note] || note;
-    return `${normalizedNote}${octave}` as NoteWithOctave;
-  }
-
-  private getNoteAtInterval(root: Note, semitones: number, octaveShift: number = 0): NoteWithOctave {
-    const notes: Note[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const normalizedRoot = this.formatNote(root, 0).slice(0, -1) as Note;
-    const rootIndex = notes.indexOf(normalizedRoot);
-
-    if (rootIndex === -1) {
-      console.error(`Invalid root note provided: ${root}`);
-      return 'C4' as NoteWithOctave;
+  private normalizeNoteName(note: Note): SharpNote {
+    const normalized = FLAT_TO_SHARP[note] ?? note;
+    if (SHARP_NOTES.includes(normalized as SharpNote)) {
+      return normalized as SharpNote;
     }
-
-    const totalSemitones = semitones + (octaveShift * 12);
-    const newIndex = (rootIndex + totalSemitones);
-    const octaveIncrease = Math.floor(newIndex / 12);
-    const noteIndex = newIndex % 12;
-    return this.formatNote(notes[noteIndex], 3 + octaveIncrease); // Start at octave 3 for a richer sound
+    return 'C';
   }
 
-  private buildExtendedChord(root: Note, intervals: number[]): NoteWithOctave[] {
-    const notes: NoteWithOctave[] = [];
-    let octave = 0;
+  private noteToMidi(note: SharpNote, octave: number): number {
+    const index = SHARP_NOTES.indexOf(note);
+    return (octave + 1) * 12 + index;
+  }
 
-    while (octave < 2) { // Create a 2-octave voicing
+  private midiToNote(midi: number): NoteWithOctave {
+    const wrapped = ((midi % 12) + 12) % 12;
+    const octave = Math.floor(midi / 12) - 1;
+    const noteName = SHARP_NOTES[wrapped];
+    return `${noteName}${octave}` as NoteWithOctave;
+  }
+
+  private buildExtendedChord(root: Note, intervals: number[], baseOctave: number = 1): NoteWithOctave[] {
+    const normalizedRoot = this.normalizeNoteName(root);
+    const clampedOctave = Math.max(-1, Math.min(8, baseOctave));
+    const baseMidi = this.noteToMidi(normalizedRoot, clampedOctave); // Ensure root starts from user selection
+    const midiNotes: number[] = [];
+
+    for (let octave = 0; octave < 2; octave += 1) {
       intervals.forEach(interval => {
-        notes.push(this.getNoteAtInterval(root, interval, octave));
+        const midi = baseMidi + interval + octave * 12;
+        if (midi >= 0 && midi <= 127) {
+          midiNotes.push(midi);
+        }
       });
-      octave++;
     }
-    return notes;
+
+    const uniqueSorted = Array.from(new Set(midiNotes)).sort((a, b) => a - b);
+    return uniqueSorted.map(midi => this.midiToNote(midi));
   }
 
-  async playChord(root: Note, intervals: number[], durationSeconds: number = 2): Promise<void> {
+  async playChord(root: Note, intervals: number[], durationSeconds: number = 2, baseOctave: number = 1): Promise<void> {
     if (!this.synth || !this.isInitialized) {
       console.warn('Synthesizer not ready. Please ensure audio is enabled.');
       return;
@@ -133,7 +144,7 @@ class StringEnsemble {
         await Tone.context.resume();
       }
 
-      const chordNotes = this.buildExtendedChord(root, intervals);
+      const chordNotes = this.buildExtendedChord(root, intervals, baseOctave);
       console.log('Playing string chord:', chordNotes);
       const duration = Math.max(0.1, durationSeconds);
       this.synth.triggerAttackRelease(chordNotes, duration); // duration in seconds
@@ -161,7 +172,8 @@ export function usePianoSynthesizer() {
   const [ensemble] = useState(() => new StringEnsemble());
 
   return {
-    playChord: (root: Note, intervals: number[], durationSeconds?: number) => ensemble.playChord(root, intervals, durationSeconds),
+    playChord: (root: Note, intervals: number[], durationSeconds?: number, baseOctave?: number) =>
+      ensemble.playChord(root, intervals, durationSeconds, baseOctave),
     initialize: () => ensemble.initialize(),
     startContext: () => ensemble.startContext(),
     stopAllNotes: () => ensemble.stopAllNotes(),

@@ -36,24 +36,26 @@ const baseMidiNumber = (note: NoteName, octave: number): number => {
   return (octave + 1) * 12 + index; // MIDI note formula (C4 -> 60)
 };
 
-const buildMidiChord = (root: string, intervals: number[]): number[] => {
+const buildMidiChord = (root: string, intervals: number[], baseOctave: number = 1): number[] => {
   const normalized = normalizeNoteName(root);
   if (!normalized) {
     return [];
   }
 
-  const rootMidi = baseMidiNumber(normalized, 4); // Place roots around middle C
+  const clampedOctave = Math.max(-1, Math.min(8, baseOctave));
+  const rootMidi = baseMidiNumber(normalized, clampedOctave); // Anchor root to selected octave
   const noteSet = new Set<number>();
 
   intervals.forEach(interval => {
-    noteSet.add(rootMidi + interval);
+    const base = rootMidi + interval;
+    if (base >= 0 && base <= 127) {
+      noteSet.add(base);
+    }
+    const upper = base + 12;
+    if (upper >= 0 && upper <= 127) {
+      noteSet.add(upper);
+    }
   });
-
-  // Add a lower root for fullness if it sits within MIDI range
-  const lowerRoot = rootMidi - 12;
-  if (lowerRoot >= 0) {
-    noteSet.add(lowerRoot);
-  }
 
   return Array.from(noteSet.values()).sort((a, b) => a - b);
 };
@@ -146,11 +148,11 @@ export const useWebMidiChordSender = () => {
   );
 
   const sendChord = useCallback(
-    (root: string, intervals: number[], durationMs: number = 1500) => {
+    (root: string, intervals: number[], durationMs: number = 1500, baseOctave: number = 1) => {
       const output = selectedOutputRef.current;
       if (!output) return;
 
-      const midiNotes = buildMidiChord(root, intervals);
+      const midiNotes = buildMidiChord(root, intervals, baseOctave);
       if (midiNotes.length === 0) return;
 
       stopAll();

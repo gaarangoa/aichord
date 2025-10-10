@@ -1,11 +1,20 @@
 'use client';
 
 import * as Tone from 'tone';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 export type SharpNote = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
 export type Note = SharpNote | 'Db' | 'Eb' | 'Gb' | 'Ab' | 'Bb';
 type NoteWithOctave = `${SharpNote}${number}`;
+export type PlaybackMode = 'block' | 'arpeggio';
+
+export interface PlayChordOptions {
+  durationSeconds?: number;
+  baseOctave?: number;
+  velocity?: number;
+  playbackMode?: PlaybackMode;
+  arpeggioIntervalMs?: number;
+}
 
 const SHARP_NOTES: SharpNote[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const FLAT_TO_SHARP: Record<string, SharpNote> = {
@@ -133,7 +142,17 @@ class StringEnsemble {
     return uniqueSorted.map(midi => this.midiToNote(midi));
   }
 
-  async playChord(root: Note, intervals: number[], durationSeconds: number = 2, baseOctave: number = 1): Promise<void> {
+  async playChord(
+    root: Note,
+    intervals: number[],
+    {
+      durationSeconds = 2,
+      baseOctave = 1,
+      velocity = 96,
+      playbackMode = 'block',
+      arpeggioIntervalMs = 120,
+    }: PlayChordOptions = {}
+  ): Promise<void> {
     if (!this.synth || !this.isInitialized) {
       console.warn('Synthesizer not ready. Please ensure audio is enabled.');
       return;
@@ -144,10 +163,23 @@ class StringEnsemble {
         await Tone.context.resume();
       }
 
-      const chordNotes = this.buildExtendedChord(root, intervals, baseOctave);
+      const chordNotes = this.buildExtendedChord(root, intervals, baseOctave).slice(0, 10);
       console.log('Playing string chord:', chordNotes);
       const duration = Math.max(0.1, durationSeconds);
-      this.synth.triggerAttackRelease(chordNotes, duration); // duration in seconds
+      const velocityScalar = Math.max(0.05, Math.min(1, velocity / 127));
+
+      if (playbackMode === 'arpeggio') {
+        const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
+        const perNoteDuration = Math.max(0.1, Math.min(duration, intervalSeconds * 1.5));
+        const startTime = Tone.now();
+
+        chordNotes.forEach((noteWithOctave, index) => {
+          const scheduledTime = startTime + index * intervalSeconds;
+          this.synth?.triggerAttackRelease(noteWithOctave, perNoteDuration, scheduledTime, velocityScalar);
+        });
+      } else {
+        this.synth.triggerAttackRelease(chordNotes, duration, undefined, velocityScalar);
+      }
     } catch (error) {
       console.error('Failed to play chord:', error);
       throw error;
@@ -171,11 +203,11 @@ class StringEnsemble {
 export function usePianoSynthesizer() {
   const [ensemble] = useState(() => new StringEnsemble());
 
-  return {
-    playChord: (root: Note, intervals: number[], durationSeconds?: number, baseOctave?: number) =>
-      ensemble.playChord(root, intervals, durationSeconds, baseOctave),
+  return useMemo(() => ({
+    playChord: (root: Note, intervals: number[], options?: PlayChordOptions) =>
+      ensemble.playChord(root, intervals, options),
     initialize: () => ensemble.initialize(),
     startContext: () => ensemble.startContext(),
     stopAllNotes: () => ensemble.stopAllNotes(),
-  };
+  }), [ensemble]);
 }

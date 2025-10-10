@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent } from 'react';
-import { usePianoSynthesizer, type Note } from '@/lib/piano';
+import { usePianoSynthesizer, type Note, type PlaybackMode } from '@/lib/piano';
 import { useWebMidiChordSender } from '@/lib/midi';
 
 type ChordQuality = 
@@ -82,20 +82,48 @@ const transposeNote = (root: string, offset: number): string | undefined => {
 };
 
 const OCTAVE_OPTIONS = [-1, 0, 1, 2, 3, 4, 5, 6] as const;
+const NOTES = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F'] as const;
+const MINOR_NOTES = ['A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D'] as const;
+const CHORD_INTERVALS: Record<ChordQuality, number[]> = {
+  'major': [0, 4, 7],
+  'minor': [0, 3, 7],
+  'dominant7': [0, 4, 7, 10],
+  'major7': [0, 4, 7, 11],
+  'minor7': [0, 3, 7, 10],
+  'halfDiminished7': [0, 3, 6, 10],
+  'diminished7': [0, 3, 6, 9],
+  'dominant9': [0, 4, 7, 10, 14],
+  'major9': [0, 4, 7, 11, 14],
+  'minor9': [0, 3, 7, 10, 14],
+  'dominant11': [0, 4, 7, 10, 14, 17],
+  'major11': [0, 4, 7, 11, 14, 17],
+  'minor11': [0, 3, 7, 10, 14, 17],
+  'dominant13': [0, 4, 7, 10, 14, 17, 21],
+  'major13': [0, 4, 7, 11, 14, 17, 21],
+  'minor13': [0, 3, 7, 10, 14, 17, 21],
+  'augmented': [0, 4, 8],
+  'diminished': [0, 3, 6],
+  'sus2': [0, 2, 7],
+  'sus4': [0, 5, 7],
+  'add9': [0, 4, 7, 14],
+  'add11': [0, 4, 7, 17],
+};
 
 const ChordDiagram: React.FC = () => {
   // Refs and state
   const svgRef = useRef<SVGSVGElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 800 });
   const { initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [showLoading, setShowLoading] = useState(false); // No samples to load
+  const [isSynthInitialized, setIsSynthInitialized] = useState(false);
   const [playingNode, setPlayingNode] = useState<string | null>(null);
   const [playbackInterval, setPlaybackInterval] = useState<number | null>(null);
-  const [isAudioEnabled, setIsAudioEnabled] = useState(false);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
   const [baseOctave, setBaseOctave] = useState<number>(1);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('block');
+  const [velocity, setVelocity] = useState<number>(96);
+  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(120);
+  const [useInternalAudio, setUseInternalAudio] = useState(true);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
   const {
     isSupported: isMidiSupported,
@@ -108,6 +136,16 @@ const ChordDiagram: React.FC = () => {
     stopAll: stopMidiOutput,
   } = useWebMidiChordSender();
   const [midiError, setMidiError] = useState<string | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const playbackIdRef = useRef(0);
+  const controlValuesRef = useRef({
+    noteDurationSeconds,
+    baseOctave,
+    velocity,
+    playbackMode,
+    arpeggioIntervalMs,
+    useInternalAudio,
+  });
 
   const sustainSeconds = useMemo(() => {
     return Math.max(0.2, noteDurationSeconds);
@@ -147,73 +185,77 @@ const ChordDiagram: React.FC = () => {
     setBaseOctave(clamped);
   }, []);
 
-  const chordIntervals: Record<ChordQuality, number[]> = {
-    'major': [0, 4, 7],
-    'minor': [0, 3, 7],
-    'dominant7': [0, 4, 7, 10],
-    'major7': [0, 4, 7, 11],
-    'minor7': [0, 3, 7, 10],
-    'halfDiminished7': [0, 3, 6, 10],
-    'diminished7': [0, 3, 6, 9],
-    'dominant9': [0, 4, 7, 10, 14],
-    'major9': [0, 4, 7, 11, 14],
-    'minor9': [0, 3, 7, 10, 14],
-    'dominant11': [0, 4, 7, 10, 14, 17],
-    'major11': [0, 4, 7, 11, 14, 17],
-    'minor11': [0, 3, 7, 10, 14, 17],
-    'dominant13': [0, 4, 7, 10, 14, 17, 21],
-    'major13': [0, 4, 7, 11, 14, 17, 21],
-    'minor13': [0, 3, 7, 10, 14, 17, 21],
-    'augmented': [0, 4, 8],
-    'diminished': [0, 3, 6],
-    'sus2': [0, 2, 7],
-    'sus4': [0, 5, 7],
-    'add9': [0, 4, 7, 14],
-    'add11': [0, 4, 7, 17],
-  };
-
-  // Constants
-  const notes = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F'] as const;
-  const minorNotes = ['A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D'] as const;
-
-  // Function to initialize piano
-  const initializePiano = useCallback(async () => {
-    if (!isInitialized) {
-      setShowLoading(true);
-      try {
-        // This will be a no-op until we have user interaction
-        await initialize();
-        console.log('Piano initialization prepared');
-        setIsInitialized(true);
-        setShowLoading(false);
-      } catch (error) {
-        console.error('Failed to initialize piano:', error);
-      } finally {
-        setShowLoading(false);
-      }
+  const handleVelocityChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.target.value);
+    if (Number.isNaN(next)) {
+      return;
     }
-  }, [initialize, isInitialized]);
+    const clamped = Math.max(1, Math.min(127, next));
+    setVelocity(clamped);
+  }, []);
+
+  const handlePlaybackModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const mode = event.target.value as PlaybackMode;
+    setPlaybackMode(mode);
+  }, []);
+
+  const handleArpeggioIntervalChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.target.value);
+    if (Number.isNaN(next)) {
+      return;
+    }
+    const clamped = Math.max(10, Math.min(2000, next));
+    setArpeggioIntervalMs(clamped);
+  }, []);
+
+  const handleInternalAudioToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const enabled = event.target.checked;
+    setUseInternalAudio(enabled);
+    if (!enabled) {
+      stopAllNotes();
+      setAudioError(null);
+    }
+  }, [stopAllNotes]);
+
+  const initializePiano = useCallback(async () => {
+    try {
+      await initialize();
+      setIsSynthInitialized(true);
+    } catch (error) {
+      console.error('Failed to initialize internal audio:', error);
+      setAudioError(error instanceof Error ? error.message : 'Failed to initialize internal audio.');
+    }
+  }, [initialize]);
+
+  const ensureInternalAudioReady = useCallback(async () => {
+    if (!useInternalAudio) {
+      return;
+    }
+    try {
+      setAudioError(null);
+      await startContext();
+      if (!isSynthInitialized) {
+        await initializePiano();
+      }
+    } catch (error) {
+      console.error('Failed to prepare internal audio:', error);
+      setAudioError(error instanceof Error ? error.message : 'Failed to prepare internal audio.');
+    }
+  }, [initializePiano, isSynthInitialized, startContext, useInternalAudio]);
 
   // Function to stop playback
   const stopPlayback = useCallback(() => {
+    playbackIdRef.current += 1;
     if (playbackInterval) {
       window.clearInterval(playbackInterval);
       setPlaybackInterval(null);
     }
     setPlayingNode(null);
     stopMidiOutput();
-    stopAllNotes(); // Stop any currently playing notes
-  }, [playbackInterval, stopMidiOutput, stopAllNotes]);
-
-  const handleEnableAudio = async () => {
-    try {
-      await startContext();
-      setIsAudioEnabled(true);
-      console.log('Audio enabled and context started.');
-    } catch (error) {
-      console.error('Failed to enable audio:', error);
+    if (useInternalAudio) {
+      stopAllNotes();
     }
-  };
+  }, [playbackInterval, stopMidiOutput, stopAllNotes, useInternalAudio]);
 
   const handleBackgroundClick = () => {
     stopPlayback();
@@ -223,12 +265,9 @@ const ChordDiagram: React.FC = () => {
   // Function to start continuous playback
   const startContinuousPlayback = useCallback(async (node: ChordNode) => {
     try {
-      // Ensure initialization on first interaction
-      if (!isInitialized) {
-        await initializePiano();
-      }
-
-      const intervals = chordIntervals[node.type];
+      const playbackId = playbackIdRef.current + 1;
+      playbackIdRef.current = playbackId;
+      const intervals = CHORD_INTERVALS[node.type];
       if (!intervals) {
         console.warn(`No intervals defined for chord type: ${node.type}`);
         return;
@@ -237,53 +276,106 @@ const ChordDiagram: React.FC = () => {
       const chordDurationSeconds = sustainSeconds;
       const chordDurationMs = chordDurationSeconds * 1000;
       const cycleDelay = loopIntervalMs;
+      const shouldLoop = playbackMode === 'block';
 
-      console.log(`Playing ${node.type} string chord with root ${node.root}`);
-      await playChord(node.root as Note, intervals, chordDurationSeconds, baseOctave);
-      sendMidiChord(node.root, intervals, chordDurationMs, baseOctave);
-
-      // Set up continuous playback
-      const interval = window.setInterval(async () => {
-        try {
-          await playChord(node.root as Note, intervals, chordDurationSeconds, baseOctave);
-          sendMidiChord(node.root, intervals, chordDurationMs, baseOctave);
-        } catch (error) {
-          console.error('Failed to play chord in interval:', error);
+      if (useInternalAudio) {
+        await ensureInternalAudioReady();
+        if (playbackIdRef.current !== playbackId) {
+          return;
         }
-      }, cycleDelay); // Interval derived from hold duration
+        await playChord(node.root as Note, intervals, {
+          durationSeconds: chordDurationSeconds,
+          baseOctave,
+          velocity,
+          playbackMode,
+          arpeggioIntervalMs,
+        });
+      } else {
+        stopAllNotes();
+      }
 
-      setPlaybackInterval(interval);
+      console.log(`Triggering MIDI chord ${node.type} with root ${node.root}`);
+      if (playbackIdRef.current !== playbackId) {
+        return;
+      }
+      sendMidiChord(node.root, intervals, {
+        durationMs: chordDurationMs,
+        baseOctave,
+        velocity,
+        playbackMode,
+        arpeggioIntervalMs,
+      });
+
+      let intervalId: number | null = null;
+      if (shouldLoop) {
+        intervalId = window.setInterval(() => {
+          if (playbackIdRef.current !== playbackId) {
+            return;
+          }
+          try {
+            if (useInternalAudio) {
+              void playChord(node.root as Note, intervals, {
+                durationSeconds: chordDurationSeconds,
+                baseOctave,
+                velocity,
+                playbackMode,
+                arpeggioIntervalMs,
+              });
+            }
+            sendMidiChord(node.root, intervals, {
+              durationMs: chordDurationMs,
+              baseOctave,
+              velocity,
+              playbackMode,
+              arpeggioIntervalMs,
+            });
+          } catch (error) {
+            console.error('Failed to send MIDI chord in interval:', error);
+          }
+        }, cycleDelay);
+      }
+
+      if (intervalId !== null) {
+        setPlaybackInterval(intervalId);
+      } else {
+        setPlaybackInterval(null);
+      }
       setPlayingNode(node.id);
     } catch (error) {
       console.error('Failed to start chord playback:', error);
     }
-  }, [isInitialized, initializePiano, playChord, sendMidiChord, sustainSeconds, loopIntervalMs, baseOctave]);
+  }, [
+    arpeggioIntervalMs,
+    baseOctave,
+    ensureInternalAudioReady,
+    loopIntervalMs,
+    playbackMode,
+    playChord,
+    sendMidiChord,
+    sustainSeconds,
+    useInternalAudio,
+    velocity,
+    stopAllNotes,
+  ]);
 
   // Handle node click
   const handleNodeClick = useCallback(async (node: ChordNode) => {
     try {
       setHoveredNode(node.id);
 
-      // If clicking the same node that's playing, stop playback
-      if (playingNode === node.id) {
-        stopPlayback();
-      } else {
-        // Stop any previous playback before starting a new one
-        stopPlayback();
-
-        // Ensure audio context is started on first interaction
-        if (!isAudioEnabled) {
-          console.warn('Audio not enabled. Please click "Enable Sound" first.');
+      if (playbackMode === 'block') {
+        if (playingNode === node.id) {
+          stopPlayback();
           return;
         }
-        
-        // Start playing the new node
-        await startContinuousPlayback(node);
       }
+
+      stopPlayback();
+      await startContinuousPlayback(node);
     } catch (error) {
       console.error('Failed to handle node click:', error);
     }
-  }, [playingNode, startContinuousPlayback, stopPlayback, isAudioEnabled]);
+  }, [playingNode, playbackMode, startContinuousPlayback, stopPlayback]);
 
   // Effect to handle resizing
   useEffect(() => {
@@ -302,31 +394,46 @@ const ChordDiagram: React.FC = () => {
     };
   }, []);
 
-  // Initialize audio context on first interaction
   useEffect(() => {
-    const handleFirstInteraction = async () => {
-      await initializePiano();
-      document.removeEventListener('click', handleFirstInteraction);
-      document.removeEventListener('touchstart', handleFirstInteraction);
-      document.removeEventListener('keydown', handleFirstInteraction);
-    };
+    const prev = controlValuesRef.current;
+    const controlsChanged =
+      prev.noteDurationSeconds !== noteDurationSeconds ||
+      prev.baseOctave !== baseOctave ||
+      prev.velocity !== velocity ||
+      prev.playbackMode !== playbackMode ||
+      prev.arpeggioIntervalMs !== arpeggioIntervalMs ||
+      prev.useInternalAudio !== useInternalAudio;
 
-    document.addEventListener('click', handleFirstInteraction);
-    document.addEventListener('touchstart', handleFirstInteraction);
-    document.addEventListener('keydown', handleFirstInteraction);
+    if (controlsChanged) {
+      controlValuesRef.current = {
+        noteDurationSeconds,
+        baseOctave,
+        velocity,
+        playbackMode,
+        arpeggioIntervalMs,
+        useInternalAudio,
+      };
 
-    return () => {
-      document.removeEventListener('click', handleFirstInteraction);
-      document.removeEventListener('touchstart', handleFirstInteraction);
-      document.removeEventListener('keydown', handleFirstInteraction);
-    };
-  }, [initializePiano]);
-
-  useEffect(() => {
-    if (playingNode) {
-      stopPlayback();
+      if (playingNode) {
+        stopPlayback();
+      }
     }
-  }, [noteDurationSeconds, baseOctave, playingNode, stopPlayback]);
+  }, [
+    noteDurationSeconds,
+    baseOctave,
+    velocity,
+    playbackMode,
+    arpeggioIntervalMs,
+    useInternalAudio,
+    playingNode,
+    stopPlayback,
+  ]);
+
+  useEffect(() => {
+    if (!useInternalAudio) {
+      stopAllNotes();
+    }
+  }, [stopAllNotes, useInternalAudio]);
 
   useEffect(() => {
     return () => {
@@ -372,7 +479,7 @@ const ChordDiagram: React.FC = () => {
     ];
 
     // Create nodes for each chord type and root note
-    notes.forEach((note, i) => {
+    NOTES.forEach((note, i) => {
       const baseAngle = (2 * Math.PI * i) / 12 - Math.PI / 2; // Start from top (C)
       
       chordConfigs.forEach(config => {
@@ -391,7 +498,7 @@ const ChordDiagram: React.FC = () => {
     });
 
     return nodesList;
-  }, [dimensions, notes]);
+  }, [dimensions]);
 
   // Calculate edges with memoization
   const edges = useMemo(() => {
@@ -446,11 +553,11 @@ const ChordDiagram: React.FC = () => {
     };
 
     // Process each note
-    notes.forEach((note, i) => {
-      const dominantRoot = notes[(i + 1) % 12]; // Perfect fifth above tonic
+    NOTES.forEach((note, i) => {
+      const dominantRoot = NOTES[(i + 1) % 12]; // Perfect fifth above tonic
       const dominantIndex = (i + 1) % 12;
-      const tritoneOfDominant = notes[(dominantIndex + 6) % 12]; // Tritone substitute for dominant
-      const relativeMinorRoot = minorNotes[i]; // Relative minor shares key signature
+      const tritoneOfDominant = NOTES[(dominantIndex + 6) % 12]; // Tritone substitute for dominant
+      const relativeMinorRoot = MINOR_NOTES[i]; // Relative minor shares key signature
       const leadingRoot = transposeNote(note, -1);
       const neapolitanRoot = transposeNote(note, 1);
       const flatSixRoot = transposeNote(note, -4);
@@ -639,7 +746,7 @@ const ChordDiagram: React.FC = () => {
     });
 
     return edgesList;
-  }, [nodes, notes, minorNotes]);
+  }, [nodes]);
 
   const connectedToHover = useMemo(() => {
     if (!hoveredNode) return new Set<string>();
@@ -702,6 +809,18 @@ const ChordDiagram: React.FC = () => {
         {!isPanelCollapsed && (
           <div className="space-y-3 border-t border-gray-200 pt-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>
+            <label className="mt-2 flex items-center justify-between text-xs font-medium text-gray-600">
+              <span>Internal Audio</span>
+              <input
+                type="checkbox"
+                checked={useInternalAudio}
+                onChange={handleInternalAudioToggle}
+                className="h-4 w-4 accent-blue-600"
+              />
+            </label>
+            {audioError && (
+              <p className="text-xs text-red-500">{audioError}</p>
+            )}
             <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
               Hold Duration (seconds)
               <input
@@ -748,24 +867,66 @@ const ChordDiagram: React.FC = () => {
               onChange={handleBaseOctaveChange}
               className="w-full"
             />
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Velocity
+              <input
+                type="number"
+                min={1}
+                max={127}
+                step={1}
+                value={velocity}
+                onChange={handleVelocityChange}
+                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={127}
+              step={1}
+              value={velocity}
+              onChange={handleVelocityChange}
+              className="w-full"
+            />
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Playback Style
+              <select
+                value={playbackMode}
+                onChange={handlePlaybackModeChange}
+                className="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="block">All notes together</option>
+                <option value="arpeggio">Arpeggiate (one by one)</option>
+              </select>
+            </label>
+            {playbackMode === 'arpeggio' && (
+              <>
+                <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+                  Arpeggio Interval (ms)
+                  <input
+                    type="number"
+                    min={10}
+                    max={2000}
+                    step={10}
+                    value={arpeggioIntervalMs}
+                    onChange={handleArpeggioIntervalChange}
+                    className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+                  />
+                </label>
+                <input
+                  type="range"
+                  min={10}
+                  max={2000}
+                  step={10}
+                  value={arpeggioIntervalMs}
+                  onChange={handleArpeggioIntervalChange}
+                  className="w-full"
+                />
+              </>
+            )}
           </div>
         )}
       </div>
-      {!isAudioEnabled && (
-        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <button
-            onClick={handleEnableAudio}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg text-xl font-bold hover:bg-blue-700 transition-colors"
-          >
-            Enable Sound
-          </button>
-        </div>
-      )}
-      {showLoading && (
-        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
-          <p>Loading audio samples...</p>
-        </div>
-      )}
       <svg
         ref={svgRef}
         viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}

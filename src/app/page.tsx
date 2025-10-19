@@ -255,19 +255,149 @@ export default function Home() {
     ]);
   }, []);
 
+  const sendConversationToAgent = useCallback(
+    async (conversationMessages: ChatMessage[]) => {
+      if (!selectedModel || !activeAgent || !agentPrompt) {
+        setChatError('Select an agent and model before sending instructions.');
+        return;
+      }
+
+      const trimmedInstructions = chatInstructions.trim();
+      const progressionLabels = chordNotebook.map(entry => entry.chord.label);
+      const progressionMessage = progressionLabels.length
+        ? `Chord progression: ${progressionLabels.join(' , ')}`
+        : 'Chord progression: (none selected yet)';
+
+      const systemMessages = [
+        ...(trimmedInstructions
+          ? [{ role: 'system' as const, content: `Instructions: ${trimmedInstructions}` }]
+          : []),
+        { role: 'system' as const, content: progressionMessage },
+        ...(agentPrompt.trim()
+          ? [{ role: 'system' as const, content: agentPrompt.trim() }]
+          : []),
+      ];
+
+      const payloadMessages = [
+        ...systemMessages,
+        ...conversationMessages.map(message => ({
+          role: message.role,
+          content: message.content,
+        })),
+      ];
+
+      setChatError(null);
+      setIsSending(true);
+
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            provider: selectedProvider,
+            model: selectedModel,
+            messages: payloadMessages,
+          }),
+        });
+
+        const raw = await response.text();
+
+        if (!response.ok) {
+          let errorMessage = 'Failed to get a response from the selected model.';
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw) as { error?: string };
+              if (parsed.error) {
+                errorMessage = parsed.error;
+              } else {
+                errorMessage = raw;
+              }
+            } catch {
+              errorMessage = raw;
+            }
+          }
+          throw new Error(errorMessage);
+        }
+
+        if (!raw) {
+          throw new Error('The selected model returned an empty response.');
+        }
+
+        let assistantContent = '';
+        try {
+          const data = JSON.parse(raw) as { message?: { content?: string } };
+          assistantContent = data.message?.content?.trim() ?? '';
+        } catch {
+          assistantContent = raw;
+        }
+
+        if (!assistantContent) {
+          throw new Error('The selected model did not return any content.');
+        }
+
+        const { reasoning, chords } = parseAssistantResponse(assistantContent);
+
+        if (reasoning) {
+          appendMessage({
+            id: createId(),
+            role: 'assistant',
+            content: reasoning,
+            timestamp: Date.now(),
+          });
+        }
+
+        if (chords) {
+          appendMessage({
+            id: createId(),
+            role: 'assistant',
+            content: chords,
+            timestamp: Date.now(),
+            variant: 'chords',
+          });
+        }
+
+        if (!reasoning && !chords) {
+          appendMessage({
+            id: createId(),
+            role: 'assistant',
+            content: assistantContent,
+            timestamp: Date.now(),
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
+        setChatError(message);
+        appendMessage({
+          id: createId(),
+          role: 'system',
+          content: `⚠️ ${message}`,
+          timestamp: Date.now(),
+        });
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [activeAgent, agentPrompt, appendMessage, chatInstructions, chordNotebook, selectedModel, selectedProvider]
+  );
+
   const handleChordTriggered = useCallback((event: ChordTriggerEvent) => {
     const friendlyQuality = event.type.replace(/([A-Z])/g, ' $1').toLowerCase();
-    appendMessage({
+    const chordMessage: ChatMessage = {
       id: createId(),
       role: 'system',
       content: `🎵 Played ${event.label} — ${friendlyQuality.trim()}`,
       chord: event,
       timestamp: Date.now(),
-    });
+    };
+    appendMessage(chordMessage);
+
     if (suppressNotebookAppendRef.current) {
       suppressNotebookAppendRef.current = false;
       return;
     }
+
     handleAddChordToNotebook(event);
   }, [appendMessage, handleAddChordToNotebook]);
 
@@ -391,130 +521,30 @@ export default function Home() {
       appendMessage(userMessage);
       setChatInput('');
       setChatError(null);
-      setIsSending(true);
-
-      const conversationMessages = [...messages, userMessage];
-
-      const trimmedInstructions = chatInstructions.trim();
-      const progressionLabels = chordNotebook.map(entry => entry.chord.label);
-      const progressionMessage = progressionLabels.length
-        ? `Chord progression: ${progressionLabels.join(' , ')}`
-        : 'Chord progression: (none selected yet)';
-
-      const systemMessages = [
-        ...(trimmedInstructions
-          ? [{ role: 'system' as const, content: `Instructions: ${trimmedInstructions}` }]
-          : []),
-        { role: 'system' as const, content: progressionMessage },
-        ...(agentPrompt.trim()
-          ? [{ role: 'system' as const, content: agentPrompt.trim() }]
-          : []),
-      ];
-
-      const conversation = [
-        ...systemMessages,
-        ...conversationMessages.map(message => ({
-          role: message.role,
-          content: message.content,
-        })),
-      ];
-
-      try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            provider: selectedProvider,
-            model: selectedModel,
-            messages: conversation,
-          }),
-        });
-
-        const raw = await response.text();
-
-        if (!response.ok) {
-          let errorMessage = 'Failed to get a response from the selected model.';
-          if (raw) {
-            try {
-              const parsed = JSON.parse(raw) as { error?: string };
-              if (parsed.error) {
-                errorMessage = parsed.error;
-              } else {
-                errorMessage = raw;
-              }
-            } catch {
-              errorMessage = raw;
-            }
-          }
-          throw new Error(errorMessage);
-        }
-
-        if (!raw) {
-          throw new Error('The selected model returned an empty response.');
-        }
-
-        let assistantContent = '';
-        try {
-          const data = JSON.parse(raw) as { message?: { content?: string } };
-          assistantContent = data.message?.content?.trim() ?? '';
-        } catch {
-          assistantContent = raw;
-        }
-
-        if (!assistantContent) {
-          throw new Error('The selected model did not return any content.');
-        }
-
-        const { reasoning, chords } = parseAssistantResponse(assistantContent);
-
-        if (reasoning) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: reasoning,
-            timestamp: Date.now(),
-          });
-        }
-
-        if (chords) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: chords,
-            timestamp: Date.now(),
-            variant: 'chords',
-          });
-        }
-
-        if (!reasoning && !chords) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: assistantContent,
-            timestamp: Date.now(),
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
-        setChatError(message);
-        appendMessage({
-          id: createId(),
-          role: 'system',
-          content: `⚠️ ${message}`,
-          timestamp: Date.now(),
-        });
-      } finally {
-        setIsSending(false);
-      }
     },
-    [activeAgent, agentPrompt, appendMessage, chatInput, chatInstructions, chordNotebook, isSending, messages, selectedModel, selectedProvider]
+    [activeAgent, agentPrompt, appendMessage, chatInput, isSending, selectedModel]
   );
 
-  const handlePlayFromMessage = useCallback((chord: ChordTriggerEvent) => {
-    diagramRef.current?.playChordById(chord.id);
-  }, []);
+  const handleSendSessionSummary = useCallback(async () => {
+    if (isSending) {
+      return;
+    }
+
+    if (!selectedModel || !activeAgent || !agentPrompt) {
+      setChatError('Select an agent and model before sending instructions.');
+      return;
+    }
+
+    const briefingMessage: ChatMessage = {
+      id: createId(),
+      role: 'system',
+      content: '📡 Sent session briefing to agent.',
+      timestamp: Date.now(),
+    };
+
+    appendMessage(briefingMessage);
+    await sendConversationToAgent([]);
+  }, [activeAgent, agentPrompt, appendMessage, isSending, selectedModel, sendConversationToAgent]);
 
   const handleNotebookPlay = useCallback(async (entryId: string) => {
     const target = chordNotebook.find(entry => entry.entryId === entryId);
@@ -638,6 +668,16 @@ export default function Home() {
               <span className="text-[11px] text-slate-500">
                 These notes are shared with the selected agent before each message.
               </span>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleSendSessionSummary}
+                  disabled={isSending || !activeAgent || !selectedModel || !agentPrompt}
+                  className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  Send to agent
+                </button>
+              </div>
             </label>
 
             {isLoadingProviders && (
@@ -707,68 +747,16 @@ export default function Home() {
               )}
 
               <div className="mt-3 flex-1 overflow-y-auto rounded-md bg-slate-100/60 p-3">
-                {messages.filter(message => message.variant === 'chords').length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    Suggested chords from the agent will appear here.
-                  </p>
-                ) : (
-                  messages
-                    .filter(message => message.variant === 'chords')
-                    .map(message => (
-                  <article
-                    key={message.id}
-                    className={`mb-3 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm last:mb-0 ${
-                      message.role === 'user'
-                        ? 'border-blue-200 bg-blue-50/70'
-                        : message.variant === 'chords'
-                        ? 'border-emerald-200 bg-emerald-50/60'
-                        : ''
-                    }`}
-                  >
-                    <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
-                      <span className="capitalize">
-                        {message.variant === 'chords' ? 'chords' : message.role}
-                      </span>
-                      <span suppressHydrationWarning>{
-                        new Date(message.timestamp).toLocaleTimeString()
-                      }</span>
-                    </div>
-                    {message.variant === 'chords' ? (
-                      <div className="space-y-1 text-slate-800">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
-                          Suggested chords
-                        </p>
-                        <p className="whitespace-pre-line font-mono text-[13px] leading-relaxed">
-                          {message.content}
-                        </p>
-                      </div>
-                    ) : (
-                      <p className="whitespace-pre-line leading-relaxed text-slate-800">
-                        {message.content}
-                      </p>
-                    )}
-                    {message.chord && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                        <span className="font-semibold text-slate-700">{message.chord.label}</span>
-                        <button
-                          type="button"
-                          onClick={() => handlePlayFromMessage(message.chord!)}
-                          className="rounded border border-blue-300 px-2 py-1 text-blue-600 transition hover:bg-blue-50"
-                        >
-                          Play
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleAddChordToNotebook(message.chord!)}
-                          className="rounded border border-slate-300 px-2 py-1 transition hover:bg-slate-100"
-                        >
-                          Add to pad
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                    ))
-                )}
+                {messages
+                  .filter(message => message.variant === 'chords')
+                  .map(message => (
+                    <p
+                      key={message.id}
+                      className="mb-2 whitespace-pre-line rounded-md border border-emerald-200 bg-white px-3 py-2 font-mono text-sm text-slate-800 last:mb-0"
+                    >
+                      {message.content}
+                    </p>
+                  ))}
               </div>
 
               <form onSubmit={handleSendMessage} className="hidden">

@@ -64,8 +64,8 @@ interface SendChordOptions {
   durationMs?: number;
   baseOctave?: number;
   velocity?: number;
-  playbackMode?: 'block' | 'arpeggio';
   arpeggioIntervalMs?: number;
+  timingJitterPercent?: number;
 }
 
 export const useWebMidiChordSender = () => {
@@ -161,8 +161,8 @@ export const useWebMidiChordSender = () => {
         durationMs = 1500,
         baseOctave = 1,
         velocity = 96,
-        playbackMode = 'block',
         arpeggioIntervalMs = 120,
+        timingJitterPercent = 0,
       } = options;
 
       const output = selectedOutputRef.current;
@@ -176,50 +176,42 @@ export const useWebMidiChordSender = () => {
       const releaseDelay = Math.max(50, durationMs);
       const velocityByte = Math.max(1, Math.min(127, Math.round(velocity)));
       const intervalGap = Math.max(10, Math.min(5000, Math.round(arpeggioIntervalMs)));
+      const timingJitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
 
-      if (playbackMode === 'arpeggio') {
-        midiNotes.forEach((noteNumber, index) => {
-          const startDelay = index * intervalGap;
-          const isLastNote = index === midiNotes.length - 1;
-          const gapBeforeNext = Math.max(10, intervalGap - 20);
-          const perNoteHold = isLastNote
-            ? releaseDelay
-            : Math.min(releaseDelay, gapBeforeNext);
+      let accumulatedDelay = 0;
+      midiNotes.forEach((noteNumber, index) => {
+        if (index > 0) {
+          const jitterFactor = timingJitterRange > 0 ? 1 + (Math.random() * 2 - 1) * timingJitterRange : 1;
+          accumulatedDelay += intervalGap * jitterFactor;
+        }
+        const startDelay = accumulatedDelay;
+        const isLastNote = index === midiNotes.length - 1;
+        const gapBeforeNext = Math.max(10, intervalGap - 20);
+        const perNoteHold = isLastNote
+          ? releaseDelay
+          : Math.min(releaseDelay, gapBeforeNext);
 
-          const onTimerId = window.setTimeout(() => {
-            const currentOutput = selectedOutputRef.current;
-            if (!currentOutput) return;
+        const velocityOffset = Math.round(Math.random() * 10 - 5);
+        const perNoteVelocity = Math.max(1, Math.min(127, velocityByte + velocityOffset));
 
-            currentOutput.send([0x90, noteNumber, velocityByte]);
-            activeNotesRef.current.push(noteNumber);
-          }, startDelay);
-          timersRef.current.push(onTimerId);
+        const onTimerId = window.setTimeout(() => {
+          const currentOutput = selectedOutputRef.current;
+          if (!currentOutput) return;
 
-          const offTimerId = window.setTimeout(() => {
-            const currentOutput = selectedOutputRef.current;
-            if (!currentOutput) return;
+          currentOutput.send([0x90, noteNumber, perNoteVelocity]);
+          activeNotesRef.current.push(noteNumber);
+        }, startDelay);
+        timersRef.current.push(onTimerId);
 
-            currentOutput.send([0x80, noteNumber, 0]);
-            activeNotesRef.current = activeNotesRef.current.filter(n => n !== noteNumber);
-          }, startDelay + perNoteHold);
-          timersRef.current.push(offTimerId);
-        });
-      } else {
-        midiNotes.forEach(noteNumber => {
-          output.send([0x90, noteNumber, velocityByte]);
-        });
+        const offTimerId = window.setTimeout(() => {
+          const currentOutput = selectedOutputRef.current;
+          if (!currentOutput) return;
 
-        activeNotesRef.current = midiNotes.slice();
-        const timerId = window.setTimeout(() => {
-          if (!selectedOutputRef.current) return;
-          midiNotes.forEach(noteNumber => {
-            selectedOutputRef.current?.send([0x80, noteNumber, 0]);
-          });
-          activeNotesRef.current = [];
-        }, releaseDelay);
-
-        timersRef.current.push(timerId);
-      }
+          currentOutput.send([0x80, noteNumber, 0]);
+          activeNotesRef.current = activeNotesRef.current.filter(n => n !== noteNumber);
+        }, startDelay + perNoteHold);
+        timersRef.current.push(offTimerId);
+      });
     },
     [stopAll]
   );

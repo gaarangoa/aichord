@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent } from 'react';
-import { usePianoSynthesizer, type Note, type PlaybackMode } from '@/lib/piano';
+import { usePianoSynthesizer, type Note } from '@/lib/piano';
 import { useWebMidiChordSender } from '@/lib/midi';
 
 type ChordQuality = 
@@ -116,13 +116,12 @@ const ChordDiagram: React.FC = () => {
   const { initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
   const [isSynthInitialized, setIsSynthInitialized] = useState(false);
   const [playingNode, setPlayingNode] = useState<string | null>(null);
-  const [playbackInterval, setPlaybackInterval] = useState<number | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
   const [baseOctave, setBaseOctave] = useState<number>(1);
-  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>('block');
   const [velocity, setVelocity] = useState<number>(96);
   const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(120);
+  const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(10);
   const [useInternalAudio, setUseInternalAudio] = useState(true);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
   const {
@@ -142,18 +141,14 @@ const ChordDiagram: React.FC = () => {
     noteDurationSeconds,
     baseOctave,
     velocity,
-    playbackMode,
     arpeggioIntervalMs,
+    arpeggioTimingJitterPercent,
     useInternalAudio,
   });
 
   const sustainSeconds = useMemo(() => {
     return Math.max(0.2, noteDurationSeconds);
   }, [noteDurationSeconds]);
-
-  const loopIntervalMs = useMemo(() => {
-    return Math.max(300, sustainSeconds * 1000 + 250);
-  }, [sustainSeconds]);
 
   const displayHoldSeconds = useMemo(() => sustainSeconds.toFixed(2), [sustainSeconds]);
 
@@ -194,18 +189,22 @@ const ChordDiagram: React.FC = () => {
     setVelocity(clamped);
   }, []);
 
-  const handlePlaybackModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    const mode = event.target.value as PlaybackMode;
-    setPlaybackMode(mode);
-  }, []);
-
   const handleArpeggioIntervalChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const next = Number(event.target.value);
     if (Number.isNaN(next)) {
       return;
     }
-    const clamped = Math.max(10, Math.min(2000, next));
-    setArpeggioIntervalMs(clamped);
+    const normalized = Math.max(1, next);
+    setArpeggioIntervalMs(normalized);
+  }, []);
+
+  const handleArpeggioJitterChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.target.value);
+    if (Number.isNaN(next)) {
+      return;
+    }
+    const clamped = Math.max(0, Math.min(100, next));
+    setArpeggioTimingJitterPercent(clamped);
   }, []);
 
   const handleInternalAudioToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -244,18 +243,16 @@ const ChordDiagram: React.FC = () => {
   }, [initializePiano, isSynthInitialized, startContext, useInternalAudio]);
 
   // Function to stop playback
-  const stopPlayback = useCallback(() => {
-    playbackIdRef.current += 1;
-    if (playbackInterval) {
-      window.clearInterval(playbackInterval);
-      setPlaybackInterval(null);
+  const stopPlayback = useCallback((options?: { skipGenerationIncrement?: boolean }) => {
+    if (!options?.skipGenerationIncrement) {
+      playbackIdRef.current += 1;
     }
     setPlayingNode(null);
     stopMidiOutput();
     if (useInternalAudio) {
       stopAllNotes();
     }
-  }, [playbackInterval, stopMidiOutput, stopAllNotes, useInternalAudio]);
+  }, [stopMidiOutput, stopAllNotes, useInternalAudio]);
 
   const handleBackgroundClick = () => {
     stopPlayback();
@@ -265,6 +262,8 @@ const ChordDiagram: React.FC = () => {
   // Function to start continuous playback
   const startContinuousPlayback = useCallback(async (node: ChordNode) => {
     try {
+      stopPlayback({ skipGenerationIncrement: true });
+
       const playbackId = playbackIdRef.current + 1;
       playbackIdRef.current = playbackId;
       const intervals = CHORD_INTERVALS[node.type];
@@ -275,8 +274,6 @@ const ChordDiagram: React.FC = () => {
 
       const chordDurationSeconds = sustainSeconds;
       const chordDurationMs = chordDurationSeconds * 1000;
-      const cycleDelay = loopIntervalMs;
-      const shouldLoop = playbackMode === 'block';
 
       if (useInternalAudio) {
         await ensureInternalAudioReady();
@@ -287,8 +284,8 @@ const ChordDiagram: React.FC = () => {
           durationSeconds: chordDurationSeconds,
           baseOctave,
           velocity,
-          playbackMode,
           arpeggioIntervalMs,
+          timingJitterPercent: arpeggioTimingJitterPercent,
         });
       } else {
         stopAllNotes();
@@ -302,60 +299,26 @@ const ChordDiagram: React.FC = () => {
         durationMs: chordDurationMs,
         baseOctave,
         velocity,
-        playbackMode,
         arpeggioIntervalMs,
+        timingJitterPercent: arpeggioTimingJitterPercent,
       });
 
-      let intervalId: number | null = null;
-      if (shouldLoop) {
-        intervalId = window.setInterval(() => {
-          if (playbackIdRef.current !== playbackId) {
-            return;
-          }
-          try {
-            if (useInternalAudio) {
-              void playChord(node.root as Note, intervals, {
-                durationSeconds: chordDurationSeconds,
-                baseOctave,
-                velocity,
-                playbackMode,
-                arpeggioIntervalMs,
-              });
-            }
-            sendMidiChord(node.root, intervals, {
-              durationMs: chordDurationMs,
-              baseOctave,
-              velocity,
-              playbackMode,
-              arpeggioIntervalMs,
-            });
-          } catch (error) {
-            console.error('Failed to send MIDI chord in interval:', error);
-          }
-        }, cycleDelay);
-      }
-
-      if (intervalId !== null) {
-        setPlaybackInterval(intervalId);
-      } else {
-        setPlaybackInterval(null);
-      }
       setPlayingNode(node.id);
     } catch (error) {
       console.error('Failed to start chord playback:', error);
     }
   }, [
     arpeggioIntervalMs,
+    arpeggioTimingJitterPercent,
     baseOctave,
     ensureInternalAudioReady,
-    loopIntervalMs,
-    playbackMode,
     playChord,
     sendMidiChord,
     sustainSeconds,
     useInternalAudio,
     velocity,
     stopAllNotes,
+    stopPlayback,
   ]);
 
   // Handle node click
@@ -363,19 +326,11 @@ const ChordDiagram: React.FC = () => {
     try {
       setHoveredNode(node.id);
 
-      if (playbackMode === 'block') {
-        if (playingNode === node.id) {
-          stopPlayback();
-          return;
-        }
-      }
-
-      stopPlayback();
       await startContinuousPlayback(node);
     } catch (error) {
       console.error('Failed to handle node click:', error);
     }
-  }, [playingNode, playbackMode, startContinuousPlayback, stopPlayback]);
+  }, [startContinuousPlayback]);
 
   // Effect to handle resizing
   useEffect(() => {
@@ -400,8 +355,8 @@ const ChordDiagram: React.FC = () => {
       prev.noteDurationSeconds !== noteDurationSeconds ||
       prev.baseOctave !== baseOctave ||
       prev.velocity !== velocity ||
-      prev.playbackMode !== playbackMode ||
       prev.arpeggioIntervalMs !== arpeggioIntervalMs ||
+      prev.arpeggioTimingJitterPercent !== arpeggioTimingJitterPercent ||
       prev.useInternalAudio !== useInternalAudio;
 
     if (controlsChanged) {
@@ -409,8 +364,8 @@ const ChordDiagram: React.FC = () => {
         noteDurationSeconds,
         baseOctave,
         velocity,
-        playbackMode,
         arpeggioIntervalMs,
+        arpeggioTimingJitterPercent,
         useInternalAudio,
       };
 
@@ -422,8 +377,8 @@ const ChordDiagram: React.FC = () => {
     noteDurationSeconds,
     baseOctave,
     velocity,
-    playbackMode,
     arpeggioIntervalMs,
+    arpeggioTimingJitterPercent,
     useInternalAudio,
     playingNode,
     stopPlayback,
@@ -844,7 +799,7 @@ const ChordDiagram: React.FC = () => {
             />
             <div className="text-xs text-gray-600">
               Hold: <span className="font-semibold text-gray-700">{displayHoldSeconds}s</span>
-              <span className="ml-2">Loop: {(loopIntervalMs / 1000).toFixed(2)}s</span>
+              <span className="ml-2">Interval: {(arpeggioIntervalMs / 1000).toFixed(2)}s</span>
             </div>
             <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
               Base Octave
@@ -889,41 +844,37 @@ const ChordDiagram: React.FC = () => {
               className="w-full"
             />
             <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Playback Style
-              <select
-                value={playbackMode}
-                onChange={handlePlaybackModeChange}
-                className="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="block">All notes together</option>
-                <option value="arpeggio">Arpeggiate (one by one)</option>
-              </select>
+              Arpeggio Interval (ms)
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={arpeggioIntervalMs}
+                onChange={handleArpeggioIntervalChange}
+                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              />
             </label>
-            {playbackMode === 'arpeggio' && (
-              <>
-                <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-                  Arpeggio Interval (ms)
-                  <input
-                    type="number"
-                    min={10}
-                    max={2000}
-                    step={10}
-                    value={arpeggioIntervalMs}
-                    onChange={handleArpeggioIntervalChange}
-                    className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-                  />
-                </label>
-                <input
-                  type="range"
-                  min={10}
-                  max={2000}
-                  step={10}
-                  value={arpeggioIntervalMs}
-                  onChange={handleArpeggioIntervalChange}
-                  className="w-full"
-                />
-              </>
-            )}
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Timing Variance (%)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={arpeggioTimingJitterPercent}
+                onChange={handleArpeggioJitterChange}
+                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={arpeggioTimingJitterPercent}
+              onChange={handleArpeggioJitterChange}
+              className="w-full"
+            />
           </div>
         )}
       </div>

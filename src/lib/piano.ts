@@ -6,14 +6,13 @@ import { useMemo, useState } from 'react';
 export type SharpNote = 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
 export type Note = SharpNote | 'Db' | 'Eb' | 'Gb' | 'Ab' | 'Bb';
 type NoteWithOctave = `${SharpNote}${number}`;
-export type PlaybackMode = 'block' | 'arpeggio';
 
 export interface PlayChordOptions {
   durationSeconds?: number;
   baseOctave?: number;
   velocity?: number;
-  playbackMode?: PlaybackMode;
   arpeggioIntervalMs?: number;
+  timingJitterPercent?: number;
 }
 
 const SHARP_NOTES: SharpNote[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -149,8 +148,8 @@ class StringEnsemble {
       durationSeconds = 2,
       baseOctave = 1,
       velocity = 96,
-      playbackMode = 'block',
       arpeggioIntervalMs = 120,
+      timingJitterPercent = 0,
     }: PlayChordOptions = {}
   ): Promise<void> {
     if (!this.synth || !this.isInitialized) {
@@ -166,20 +165,31 @@ class StringEnsemble {
       const chordNotes = this.buildExtendedChord(root, intervals, baseOctave).slice(0, 10);
       console.log('Playing string chord:', chordNotes);
       const duration = Math.max(0.1, durationSeconds);
-      const velocityScalar = Math.max(0.05, Math.min(1, velocity / 127));
+      const baseVelocity = Math.max(1, Math.min(127, Math.round(velocity)));
 
-      if (playbackMode === 'arpeggio') {
-        const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
-        const perNoteDuration = Math.max(0.1, Math.min(duration, intervalSeconds * 1.5));
-        const startTime = Tone.now();
+      const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
+      const jitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
+      const perNoteDuration = Math.max(0.1, Math.min(duration, intervalSeconds * 1.5));
+      let nextTime = Tone.now();
 
-        chordNotes.forEach((noteWithOctave, index) => {
-          const scheduledTime = startTime + index * intervalSeconds;
-          this.synth?.triggerAttackRelease(noteWithOctave, perNoteDuration, scheduledTime, velocityScalar);
-        });
-      } else {
-        this.synth.triggerAttackRelease(chordNotes, duration, undefined, velocityScalar);
-      }
+      chordNotes.forEach((noteWithOctave, index) => {
+        if (index > 0) {
+          const jitterFactor = jitterRange > 0 ? 1 + (Math.random() * 2 - 1) * jitterRange : 1;
+          nextTime += intervalSeconds * jitterFactor;
+        }
+
+        const velocityOffset = Math.round(Math.random() * 10 - 5);
+        const noteVelocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+        const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
+        const attackJitter = Math.random() * 0.03; // up to 30ms for subtle variation
+
+        this.synth?.triggerAttackRelease(
+          noteWithOctave,
+          perNoteDuration,
+          nextTime + attackJitter,
+          velocityScalar
+        );
+      });
     } catch (error) {
       console.error('Failed to play chord:', error);
       throw error;

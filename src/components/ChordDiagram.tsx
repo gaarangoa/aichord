@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent, forwardRef, useImperativeHandle } from 'react';
 import { usePianoSynthesizer, type Note } from '@/lib/piano';
 import { useWebMidiChordSender } from '@/lib/midi';
 
-type ChordQuality = 
-  | 'major' | 'minor' 
+type ChordQuality =
+  | 'major' | 'minor'
   | 'dominant7' | 'major7' | 'minor7' | 'halfDiminished7' | 'diminished7'
   | 'dominant9' | 'major9' | 'minor9'
   | 'dominant11' | 'major11' | 'minor11'
@@ -14,116 +14,116 @@ type ChordQuality =
 
 interface ChordNode {
   id: string;
-  x: number;
-  y: number;
   type: ChordQuality;
   root: string;
   label: string;
-  radius: number;
-  angleOffset: number;
 }
 
-interface ChordEdge {
-  from: string;
-  to: string;
-  type:
-    | 'dominant'
-    | 'relative'
-    | 'parallel'
-    | 'secondary'
-    | 'substitute'
-    | 'extension'
-    | 'alteration'
-    | 'diatonic'
-    | 'leadingTone'
-    | 'mixture'
-    | 'neapolitan'
-    | 'augmentedSixth'
-    | 'chromaticMediant';
+export interface ChordTriggerEvent {
+  id: string;
+  root: string;
+  label: string;
+  type: ChordQuality;
 }
 
-const NOTE_TO_SEMITONE: Record<string, number> = {
-  'C': 0,
-  'Db': 1,
-  'D': 2,
-  'Eb': 3,
-  'E': 4,
-  'F': 5,
-  'F#': 6,
-  'G': 7,
-  'Ab': 8,
-  'A': 9,
-  'Bb': 10,
-  'B': 11,
-};
+export interface ChordDiagramHandle {
+  playChordById: (id: string) => Promise<void>;
+}
 
-const SEMITONE_TO_NOTE: Record<number, string> = {
-  0: 'C',
-  1: 'Db',
-  2: 'D',
-  3: 'Eb',
-  4: 'E',
-  5: 'F',
-  6: 'F#',
-  7: 'G',
-  8: 'Ab',
-  9: 'A',
-  10: 'Bb',
-  11: 'B',
-};
-
-const transposeNote = (root: string, offset: number): string | undefined => {
-  const base = NOTE_TO_SEMITONE[root];
-  if (base === undefined) {
-    return undefined;
-  }
-  const semitone = (base + offset + 12) % 12;
-  return SEMITONE_TO_NOTE[semitone];
-};
+export interface ChordDiagramProps {
+  onChordTriggered?: (event: ChordTriggerEvent) => void;
+}
 
 const OCTAVE_OPTIONS = [-1, 0, 1, 2, 3, 4, 5, 6] as const;
 const NOTES = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F'] as const;
-const MINOR_NOTES = ['A', 'E', 'B', 'F#', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D'] as const;
 const CHORD_INTERVALS: Record<ChordQuality, number[]> = {
-  'major': [0, 4, 7],
-  'minor': [0, 3, 7],
-  'dominant7': [0, 4, 7, 10],
-  'major7': [0, 4, 7, 11],
-  'minor7': [0, 3, 7, 10],
-  'halfDiminished7': [0, 3, 6, 10],
-  'diminished7': [0, 3, 6, 9],
-  'dominant9': [0, 4, 7, 10, 14],
-  'major9': [0, 4, 7, 11, 14],
-  'minor9': [0, 3, 7, 10, 14],
-  'dominant11': [0, 4, 7, 10, 14, 17],
-  'major11': [0, 4, 7, 11, 14, 17],
-  'minor11': [0, 3, 7, 10, 14, 17],
-  'dominant13': [0, 4, 7, 10, 14, 17, 21],
-  'major13': [0, 4, 7, 11, 14, 17, 21],
-  'minor13': [0, 3, 7, 10, 14, 17, 21],
-  'augmented': [0, 4, 8],
-  'diminished': [0, 3, 6],
-  'sus2': [0, 2, 7],
-  'sus4': [0, 5, 7],
-  'add9': [0, 4, 7, 14],
-  'add11': [0, 4, 7, 17],
+  major: [0, 4, 7],
+  minor: [0, 3, 7],
+  dominant7: [0, 4, 7, 10],
+  major7: [0, 4, 7, 11],
+  minor7: [0, 3, 7, 10],
+  halfDiminished7: [0, 3, 6, 10],
+  diminished7: [0, 3, 6, 9],
+  dominant9: [0, 4, 7, 10, 14],
+  major9: [0, 4, 7, 11, 14],
+  minor9: [0, 3, 7, 10, 14],
+  dominant11: [0, 4, 7, 10, 14, 17],
+  major11: [0, 4, 7, 11, 14, 17],
+  minor11: [0, 3, 7, 10, 14, 17],
+  dominant13: [0, 4, 7, 10, 14, 17, 21],
+  major13: [0, 4, 7, 11, 14, 17, 21],
+  minor13: [0, 3, 7, 10, 14, 17, 21],
+  augmented: [0, 4, 8],
+  diminished: [0, 3, 6],
+  sus2: [0, 2, 7],
+  sus4: [0, 5, 7],
+  add9: [0, 4, 7, 14],
+  add11: [0, 4, 7, 17],
 };
 
-const ChordDiagram: React.FC = () => {
-  // Refs and state
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [dimensions, setDimensions] = useState({ width: 800, height: 800 });
+const CHORD_GROUPS: Array<{
+  title: string;
+  columns: Array<{ key: string; suffix: string; type: ChordQuality; display?: string }>;
+}> = [
+  {
+    title: 'Triads',
+    columns: [
+      { key: 'maj', suffix: 'maj', type: 'major' },
+      { key: 'min', suffix: 'min', type: 'minor' },
+      { key: 'aug', suffix: 'aug', type: 'augmented' },
+      { key: 'dim', suffix: 'dim', type: 'diminished' },
+    ],
+  },
+  {
+    title: 'Sevenths',
+    columns: [
+      { key: '7', suffix: '7', type: 'dominant7' },
+      { key: 'maj7', suffix: 'maj7', type: 'major7' },
+      { key: 'min7', suffix: 'min7', type: 'minor7' },
+      { key: 'half-diminished', suffix: 'ø7', type: 'halfDiminished7', display: 'ø7' },
+      { key: 'diminished7', suffix: '°7', type: 'diminished7', display: '°7' },
+    ],
+  },
+  {
+    title: 'Ninths',
+    columns: [
+      { key: '9', suffix: '9', type: 'dominant9' },
+      { key: 'maj9', suffix: 'maj9', type: 'major9' },
+      { key: 'min9', suffix: 'min9', type: 'minor9' },
+    ],
+  },
+  {
+    title: 'Elevenths',
+    columns: [
+      { key: '11', suffix: '11', type: 'dominant11' },
+      { key: 'maj11', suffix: 'maj11', type: 'major11' },
+      { key: 'min11', suffix: 'min11', type: 'minor11' },
+    ],
+  },
+  {
+    title: 'Suspended & Adds',
+    columns: [
+      { key: 'sus2', suffix: 'sus2', type: 'sus2' },
+      { key: 'sus4', suffix: 'sus4', type: 'sus4' },
+      { key: 'add9', suffix: 'add9', type: 'add9' },
+      { key: 'add11', suffix: 'add11', type: 'add11' },
+    ],
+  },
+];
+
+const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChordTriggered }, ref) => {
   const { initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
   const [isSynthInitialized, setIsSynthInitialized] = useState(false);
   const [playingNode, setPlayingNode] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
-  const [baseOctave, setBaseOctave] = useState<number>(1);
+  const [baseOctave, setBaseOctave] = useState<number>(2);
   const [velocity, setVelocity] = useState<number>(96);
-  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(120);
+  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(1);
   const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(10);
   const [useInternalAudio, setUseInternalAudio] = useState(true);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
+
   const {
     isSupported: isMidiSupported,
     hasAccess: hasMidiAccess,
@@ -136,6 +136,7 @@ const ChordDiagram: React.FC = () => {
   } = useWebMidiChordSender();
   const [midiError, setMidiError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+
   const playbackIdRef = useRef(0);
   const controlValuesRef = useRef({
     noteDurationSeconds,
@@ -146,10 +147,7 @@ const ChordDiagram: React.FC = () => {
     useInternalAudio,
   });
 
-  const sustainSeconds = useMemo(() => {
-    return Math.max(0.2, noteDurationSeconds);
-  }, [noteDurationSeconds]);
-
+  const sustainSeconds = useMemo(() => Math.max(0.2, noteDurationSeconds), [noteDurationSeconds]);
   const displayHoldSeconds = useMemo(() => sustainSeconds.toFixed(2), [sustainSeconds]);
 
   const handleConnectMidi = useCallback(async () => {
@@ -191,11 +189,10 @@ const ChordDiagram: React.FC = () => {
 
   const handleArpeggioIntervalChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const next = Number(event.target.value);
-    if (Number.isNaN(next)) {
+    if (Number.isNaN(next) || next <= 0) {
       return;
     }
-    const normalized = Math.max(1, next);
-    setArpeggioIntervalMs(normalized);
+    setArpeggioIntervalMs(next);
   }, []);
 
   const handleArpeggioJitterChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -208,13 +205,8 @@ const ChordDiagram: React.FC = () => {
   }, []);
 
   const handleInternalAudioToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const enabled = event.target.checked;
-    setUseInternalAudio(enabled);
-    if (!enabled) {
-      stopAllNotes();
-      setAudioError(null);
-    }
-  }, [stopAllNotes]);
+    setUseInternalAudio(event.target.checked);
+  }, []);
 
   const initializePiano = useCallback(async () => {
     try {
@@ -242,7 +234,6 @@ const ChordDiagram: React.FC = () => {
     }
   }, [initializePiano, isSynthInitialized, startContext, useInternalAudio]);
 
-  // Function to stop playback
   const stopPlayback = useCallback((options?: { skipGenerationIncrement?: boolean }) => {
     if (!options?.skipGenerationIncrement) {
       playbackIdRef.current += 1;
@@ -254,12 +245,43 @@ const ChordDiagram: React.FC = () => {
     }
   }, [stopMidiOutput, stopAllNotes, useInternalAudio]);
 
-  const handleBackgroundClick = () => {
-    stopPlayback();
-    setHoveredNode(null);
-  };
+  const columnDefinitions = useMemo(
+    () =>
+      CHORD_GROUPS.flatMap((group, groupIndex) =>
+        group.columns.map((column, columnIndex) => ({
+          ...column,
+          groupIndex,
+          groupTitle: group.title,
+          columnIndex,
+        }))
+      ),
+    []
+  );
 
-  // Function to start continuous playback
+  const matrixRows = useMemo(
+    () =>
+      NOTES.map(root => ({
+        root,
+        cells: columnDefinitions.map(column => ({
+          id: `${root}${column.suffix}`,
+          root,
+          type: column.type,
+          label: `${root}${column.suffix}`,
+        } as ChordNode)),
+      })),
+    [columnDefinitions]
+  );
+
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, ChordNode>();
+    matrixRows.forEach(row => {
+      row.cells.forEach(cell => {
+        map.set(cell.id, cell);
+      });
+    });
+    return map;
+  }, [matrixRows]);
+
   const startContinuousPlayback = useCallback(async (node: ChordNode) => {
     try {
       stopPlayback({ skipGenerationIncrement: true });
@@ -291,7 +313,6 @@ const ChordDiagram: React.FC = () => {
         stopAllNotes();
       }
 
-      console.log(`Triggering MIDI chord ${node.type} with root ${node.root}`);
       if (playbackIdRef.current !== playbackId) {
         return;
       }
@@ -303,6 +324,13 @@ const ChordDiagram: React.FC = () => {
         timingJitterPercent: arpeggioTimingJitterPercent,
       });
 
+      onChordTriggered?.({
+        id: node.id,
+        root: node.root,
+        label: node.label,
+        type: node.type,
+      });
+
       setPlayingNode(node.id);
     } catch (error) {
       console.error('Failed to start chord playback:', error);
@@ -312,42 +340,24 @@ const ChordDiagram: React.FC = () => {
     arpeggioTimingJitterPercent,
     baseOctave,
     ensureInternalAudioReady,
+    onChordTriggered,
     playChord,
     sendMidiChord,
+    stopAllNotes,
+    stopPlayback,
     sustainSeconds,
     useInternalAudio,
     velocity,
-    stopAllNotes,
-    stopPlayback,
   ]);
 
-  // Handle node click
   const handleNodeClick = useCallback(async (node: ChordNode) => {
     try {
       setHoveredNode(node.id);
-
       await startContinuousPlayback(node);
     } catch (error) {
       console.error('Failed to handle node click:', error);
     }
   }, [startContinuousPlayback]);
-
-  // Effect to handle resizing
-  useEffect(() => {
-    const handleResize = () => {
-      if (svgRef.current) {
-        const { width, height } = svgRef.current.getBoundingClientRect();
-        setDimensions({ width, height });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    handleResize(); // Initial call to set dimensions
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-    };
-  }, []);
 
   useEffect(() => {
     const prev = controlValuesRef.current;
@@ -390,341 +400,29 @@ const ChordDiagram: React.FC = () => {
     }
   }, [stopAllNotes, useInternalAudio]);
 
-  useEffect(() => {
-    return () => {
-      stopPlayback();
-    };
-  }, [stopPlayback]);
+  useEffect(() => stopPlayback, [stopPlayback]);
 
-  // Calculate nodes with memoization
-  const nodes = useMemo(() => {
-    const centerX = dimensions.width / 2;
-    const centerY = dimensions.height / 2;
-    const nodesList: ChordNode[] = [];
+  const playChordById = useCallback(async (id: string) => {
+    const node = nodeMap.get(id);
+    if (!node) {
+      console.warn(`No chord node found for id ${id}`);
+      return;
+    }
+    await startContinuousPlayback(node);
+  }, [nodeMap, startContinuousPlayback]);
 
-    // Define chord types and their configurations
-    const chordConfigs = [
-      // Basic triads
-      { type: 'major', suffix: 'maj', radius: dimensions.width * 0.15, angleOffset: 0 }, // inner ring for major triads
-      { type: 'minor', suffix: 'min', radius: dimensions.width * 0.20, angleOffset: Math.PI / 12 }, // adjacent ring for minor triads
-      
-      // Seventh chords
-      { type: 'dominant7', suffix: '7', radius: dimensions.width * 0.25, angleOffset: 0 },
-      { type: 'major7', suffix: 'maj7', radius: dimensions.width * 0.25, angleOffset: Math.PI / 12 },
-      { type: 'minor7', suffix: 'm7', radius: dimensions.width * 0.25, angleOffset: Math.PI / 6 },
-      { type: 'halfDiminished7', suffix: 'ø7', radius: dimensions.width * 0.25, angleOffset: Math.PI / 4 },
-      { type: 'diminished7', suffix: '°7', radius: dimensions.width * 0.25, angleOffset: Math.PI / 3 },
-      
-      // Extended chords
-      { type: 'dominant9', suffix: '9', radius: dimensions.width * 0.35, angleOffset: 0 },
-      { type: 'major9', suffix: 'maj9', radius: dimensions.width * 0.35, angleOffset: Math.PI / 12 },
-      { type: 'minor9', suffix: 'm9', radius: dimensions.width * 0.35, angleOffset: Math.PI / 6 },
-      
-      { type: 'dominant11', suffix: '11', radius: dimensions.width * 0.35, angleOffset: Math.PI / 4 },
-      { type: 'major11', suffix: 'maj11', radius: dimensions.width * 0.35, angleOffset: Math.PI / 3 },
-      { type: 'minor11', suffix: 'm11', radius: dimensions.width * 0.35, angleOffset: Math.PI / 2.4 },
-      
-      // Altered and suspended chords (outer circle)
-      { type: 'augmented', suffix: 'aug', radius: dimensions.width * 0.45, angleOffset: 0 },
-      { type: 'diminished', suffix: 'dim', radius: dimensions.width * 0.45, angleOffset: Math.PI / 12 },
-      { type: 'sus2', suffix: 'sus2', radius: dimensions.width * 0.45, angleOffset: Math.PI / 6 },
-      { type: 'sus4', suffix: 'sus4', radius: dimensions.width * 0.45, angleOffset: Math.PI / 4 },
-      { type: 'add9', suffix: 'add9', radius: dimensions.width * 0.45, angleOffset: Math.PI / 3 },
-      { type: 'add11', suffix: 'add11', radius: dimensions.width * 0.45, angleOffset: Math.PI / 2.4 },
-    ];
+  useImperativeHandle(ref, () => ({
+    playChordById,
+  }), [playChordById]);
 
-    // Create nodes for each chord type and root note
-    NOTES.forEach((note, i) => {
-      const baseAngle = (2 * Math.PI * i) / 12 - Math.PI / 2; // Start from top (C)
-      
-      chordConfigs.forEach(config => {
-        const angle = baseAngle + config.angleOffset;
-        nodesList.push({
-          id: note + config.suffix,
-          x: centerX + config.radius * Math.cos(angle),
-          y: centerY + config.radius * Math.sin(angle),
-          type: config.type as ChordQuality,
-          root: note,
-          label: `${note}${config.suffix}`,
-          radius: config.radius,
-          angleOffset: config.angleOffset
-        });
-      });
-    });
-
-    return nodesList;
-  }, [dimensions]);
-
-  // Calculate edges with memoization
-  const edges = useMemo(() => {
-    const edgesList: ChordEdge[] = [];
-    const addedEdges = new Set<string>();
-
-    const nodeMap = new Map<string, string>();
-    nodes.forEach(n => nodeMap.set(`${n.root}:${n.type}`, n.id));
-
-    const findChordId = (root: string, type: ChordQuality) => nodeMap.get(`${root}:${type}`);
-    const extensionChains: ChordQuality[][] = [
-      ['major', 'major7', 'major9', 'major11', 'major13'],
-      ['minor', 'minor7', 'minor9', 'minor11', 'minor13'],
-      ['dominant7', 'dominant9', 'dominant11', 'dominant13'],
-    ];
-    const mixtureTargetsMajor: Array<{ interval: number; quality: ChordQuality }> = [
-      { interval: 3, quality: 'major' },  // ♭III
-      { interval: 5, quality: 'minor' },  // iv
-      { interval: 8, quality: 'major' },  // ♭VI
-      { interval: 10, quality: 'major' }, // ♭VII
-    ];
-    const mixtureTargetsMinor: Array<{ interval: number; quality: ChordQuality }> = [
-      { interval: 0, quality: 'major' },  // Picardy (I)
-      { interval: 5, quality: 'major' },  // IV
-      { interval: 7, quality: 'major' },  // V
-    ];
-    const secondaryTargetsMajor: Array<{ interval: number; quality: ChordQuality }> = [
-      { interval: 2, quality: 'minor' },  // ii
-      { interval: 4, quality: 'minor' },  // iii
-      { interval: 5, quality: 'major' },  // IV
-      { interval: 7, quality: 'major' },  // V
-      { interval: 9, quality: 'minor' },  // vi
-    ];
-    const secondaryTargetsMinor: Array<{ interval: number; quality: ChordQuality }> = [
-      { interval: 3, quality: 'major' },  // III
-      { interval: 5, quality: 'minor' },  // iv
-      { interval: 7, quality: 'major' },  // V
-      { interval: 8, quality: 'major' },  // VI
-      { interval: 10, quality: 'major' }, // VII
-    ];
-    const chromaticMediantIntervals = [4, -4, 8, -8];
-
-    // Helper function to safely add an edge if it doesn't exist
-    const addEdge = (from: string | undefined, to: string | undefined, type: ChordEdge['type']) => {
-      if (from && to) {
-        const edgeKey = `${from}-${to}-${type}`;
-        if (!addedEdges.has(edgeKey)) {
-          edgesList.push({ from, to, type });
-          addedEdges.add(edgeKey);
-        }
-      }
-    };
-
-    // Process each note
-    NOTES.forEach((note, i) => {
-      const dominantRoot = NOTES[(i + 1) % 12]; // Perfect fifth above tonic
-      const dominantIndex = (i + 1) % 12;
-      const tritoneOfDominant = NOTES[(dominantIndex + 6) % 12]; // Tritone substitute for dominant
-      const relativeMinorRoot = MINOR_NOTES[i]; // Relative minor shares key signature
-      const leadingRoot = transposeNote(note, -1);
-      const neapolitanRoot = transposeNote(note, 1);
-      const flatSixRoot = transposeNote(note, -4);
-
-      const tonicMajor = findChordId(note, 'major');
-      const tonicMinor = findChordId(note, 'minor');
-      const dominantMajor = findChordId(dominantRoot, 'major');
-      const dominantSeven = findChordId(dominantRoot, 'dominant7');
-      const tritoneDominant = findChordId(tritoneOfDominant, 'dominant7');
-      const relativeMinor = findChordId(relativeMinorRoot, 'minor');
-      const dominantTarget = dominantSeven ?? dominantMajor;
-
-      // Functional dominant motion (V -> I and V7 -> I / i)
-      addEdge(dominantMajor, tonicMajor, 'dominant');
-      addEdge(dominantSeven, tonicMajor, 'dominant');
-      addEdge(dominantMajor, tonicMinor, 'dominant');
-      addEdge(dominantSeven, tonicMinor, 'dominant');
-
-      // Tritone substitution resolves to tonic
-      addEdge(tritoneDominant, tonicMajor, 'substitute');
-      addEdge(tritoneDominant, tonicMinor, 'substitute');
-
-      // Relative relationships (major <-> relative minor)
-      addEdge(tonicMajor, relativeMinor, 'relative');
-      addEdge(relativeMinor, tonicMajor, 'relative');
-
-      // Parallel relationships (same root major/minor)
-      addEdge(tonicMajor, tonicMinor, 'parallel');
-      addEdge(tonicMinor, tonicMajor, 'parallel');
-
-      // Leading-tone resolutions (fully and half diminished)
-      if (leadingRoot) {
-        const leadingDim = findChordId(leadingRoot, 'diminished7');
-        addEdge(leadingDim, tonicMajor, 'leadingTone');
-        addEdge(leadingDim, tonicMinor, 'leadingTone');
-
-        const leadingHalfDim = findChordId(leadingRoot, 'halfDiminished7');
-        addEdge(leadingHalfDim, tonicMinor, 'leadingTone');
-      }
-
-      // Secondary dominants (all diatonic scale degrees)
-      const addSecondaryDominants = (targets: Array<{ interval: number; quality: ChordQuality }>) => {
-        targets.forEach(({ interval, quality }) => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          const targetChord = findChordId(targetRoot, quality);
-          if (!targetChord) return;
-
-          const appliedRoot = transposeNote(targetRoot, 7);
-          if (!appliedRoot) return;
-
-          const appliedDominant7 = findChordId(appliedRoot, 'dominant7');
-          const appliedDominantMajor = findChordId(appliedRoot, 'major');
-
-          addEdge(appliedDominant7, targetChord, 'secondary');
-          addEdge(appliedDominantMajor, targetChord, 'secondary');
-        });
-      };
-
-      if (tonicMajor) {
-        addSecondaryDominants(secondaryTargetsMajor);
-      }
-      if (tonicMinor) {
-        addSecondaryDominants(secondaryTargetsMinor);
-      }
-
-      // Neapolitan and augmented-sixth approaches to the dominant
-      if (neapolitanRoot) {
-        const neapolitanChord = findChordId(neapolitanRoot, 'major');
-        addEdge(neapolitanChord, dominantTarget, 'neapolitan');
-      }
-
-      if (flatSixRoot) {
-        const flatSixDominant = findChordId(flatSixRoot, 'dominant7');
-        addEdge(flatSixDominant, dominantTarget, 'augmentedSixth');
-      }
-
-      // Modal mixture
-      if (tonicMajor) {
-        mixtureTargetsMajor.forEach(({ interval, quality }) => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          addEdge(tonicMajor, findChordId(targetRoot, quality), 'mixture');
-        });
-      }
-
-      if (tonicMinor) {
-        mixtureTargetsMinor.forEach(({ interval, quality }) => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          addEdge(tonicMinor, findChordId(targetRoot, quality), 'mixture');
-        });
-      }
-
-      // Chromatic mediants from the tonic center
-      const chromaticSourceIds = [tonicMajor, tonicMinor];
-      chromaticSourceIds.forEach(sourceId => {
-        if (!sourceId) return;
-        chromaticMediantIntervals.forEach(interval => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          ['major', 'minor'].forEach((quality) => {
-            addEdge(
-              sourceId,
-              findChordId(targetRoot, quality as ChordQuality),
-              'chromaticMediant'
-            );
-          });
-        });
-      });
-
-      // Diatonic motion from the tonic
-      if (tonicMajor) {
-        const diatonicMajorTargets: Array<{ interval: number; quality: ChordQuality }> = [
-          { interval: 5, quality: 'major' }, // IV
-          { interval: 7, quality: 'major' }, // V
-          { interval: 2, quality: 'minor' }, // ii
-          { interval: 4, quality: 'minor' }, // iii
-          { interval: 9, quality: 'minor' }, // vi
-        ];
-
-        diatonicMajorTargets.forEach(({ interval, quality }) => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          addEdge(
-            tonicMajor,
-            findChordId(targetRoot, quality),
-            'diatonic'
-          );
-        });
-      }
-
-      if (tonicMinor) {
-        const diatonicMinorTargets: Array<{ interval: number; quality: ChordQuality }> = [
-          { interval: 5, quality: 'minor' }, // iv
-          { interval: 7, quality: 'minor' }, // v
-          { interval: 7, quality: 'dominant7' }, // V7 (harmonic minor)
-          { interval: 8, quality: 'major' }, // VI
-          { interval: 10, quality: 'major' }, // VII (subtonic)
-        ];
-
-        diatonicMinorTargets.forEach(({ interval, quality }) => {
-          const targetRoot = transposeNote(note, interval);
-          if (!targetRoot) return;
-          addEdge(
-            tonicMinor,
-            findChordId(targetRoot, quality),
-            'diatonic'
-          );
-        });
-      }
-
-      // Suspended chord resolutions
-      ['sus2', 'sus4'].forEach(susType => {
-        const suspendedChord = findChordId(note, susType as ChordQuality);
-        addEdge(suspendedChord, tonicMajor, 'alteration');
-
-        const dominantForSuspension = transposeNote(note, 7);
-        if (dominantForSuspension) {
-          addEdge(
-            suspendedChord,
-            findChordId(dominantForSuspension, 'diminished7'),
-            'alteration'
-          );
-        }
-      });
-
-      // Altered triads connecting back to diatonic quality
-      addEdge(findChordId(note, 'augmented'), tonicMajor, 'alteration');
-      addEdge(findChordId(note, 'diminished'), tonicMinor, 'alteration');
-
-      // Extension relationships (layered color)
-      extensionChains.forEach(chain => {
-        for (let j = 0; j < chain.length - 1; j += 1) {
-          const fromId = findChordId(note, chain[j]);
-          const toId = findChordId(note, chain[j + 1]);
-          addEdge(fromId, toId, 'extension');
-        }
-      });
-
-      // Added tone resolutions
-      const addNine = findChordId(note, 'add9');
-      const addEleven = findChordId(note, 'add11');
-      addEdge(addNine, findChordId(note, 'major'), 'extension');
-      addEdge(addEleven, findChordId(note, 'major7'), 'extension');
-    });
-
-    return edgesList;
-  }, [nodes]);
-
-  const connectedToHover = useMemo(() => {
-    if (!hoveredNode) return new Set<string>();
-    const related = new Set<string>();
-    edges.forEach(edge => {
-      if (edge.from === hoveredNode) {
-        related.add(edge.to);
-      }
-      if (edge.to === hoveredNode) {
-        related.add(edge.from);
-      }
-    });
-    return related;
-  }, [edges, hoveredNode]);
-
-  return (
-    <div className="w-full h-full flex flex-col items-center justify-center bg-white text-gray-900 relative">
-      <div className="absolute top-4 left-4 z-40 min-w-[240px] rounded-lg bg-white/90 px-3 py-3 shadow space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Controls</p>
-          <button
-            onClick={() => setIsPanelCollapsed(prev => !prev)}
-            className="rounded-md px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50"
+return (
+  <div className="flex h-full w-full flex-col bg-white text-gray-900">
+    <div className="mx-4 mt-4 rounded-lg border border-slate-200 bg-white px-4 py-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Controls</p>
+        <button
+          onClick={() => setIsPanelCollapsed(prev => !prev)}
+          className="rounded-md px-2 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50"
           >
             {isPanelCollapsed ? 'Show' : 'Hide'}
           </button>
@@ -745,7 +443,7 @@ const ChordDiagram: React.FC = () => {
             ) : (
               <select
                 value={selectedOutputId ?? ''}
-                onChange={(event) => selectMidiOutput(event.target.value || null)}
+                onChange={event => selectMidiOutput(event.target.value || null)}
                 className="mt-2 w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
               >
                 <option value="">None (mute MIDI)</option>
@@ -762,7 +460,7 @@ const ChordDiagram: React.FC = () => {
           <p className="mt-1 text-xs text-red-500">{midiError}</p>
         )}
         {!isPanelCollapsed && (
-          <div className="space-y-3 border-t border-gray-200 pt-3">
+          <div className="mt-3 space-y-3 border-t border-gray-200 pt-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>
             <label className="mt-2 flex items-center justify-between text-xs font-medium text-gray-600">
               <span>Internal Audio</span>
@@ -878,122 +576,75 @@ const ChordDiagram: React.FC = () => {
           </div>
         )}
       </div>
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
-        className="w-full h-full"
-        onClick={handleBackgroundClick}
-      >
-        <defs>
-          <marker
-            id="arrowhead"
-            markerWidth="10"
-            markerHeight="7"
-            refX="9"
-            refY="3.5"
-            orient="auto"
-          >
-            <path d="M0,0 L10,3.5 L0,7 Z" fill="#9ca3af" />
-          </marker>
-        </defs>
 
-        {/* Draw edges */}
-        <g className="edges">
-          {edges.map((edge: ChordEdge, i: number) => {
-            const fromNode = nodes.find(n => n.id === edge.from)!;
-            const toNode = nodes.find(n => n.id === edge.to)!;
-            const isEdgeActive = hoveredNode && (edge.from === hoveredNode || edge.to === hoveredNode);
+    <div className="flex-1 w-full overflow-auto px-4 pb-6 pt-2">
+      <div className="w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr>
+                <th className="sticky top-0 z-10 bg-slate-100 px-3 py-2 text-left font-semibold text-slate-700">Root</th>
+                {CHORD_GROUPS.map(group => (
+                  <th
+                    key={group.title}
+                    colSpan={group.columns.length}
+                    className="sticky top-0 z-10 bg-slate-100 px-3 py-2 text-center font-semibold uppercase tracking-wide text-slate-600"
+                  >
+                    {group.title}
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                <th className="bg-slate-50 px-3 py-2 text-left font-semibold text-slate-600">&nbsp;</th>
+                {columnDefinitions.map(column => (
+                  <th
+                    key={`${column.groupIndex}-${column.key}-${column.columnIndex}`}
+                    className="bg-slate-50 px-3 py-2 text-center font-semibold text-slate-600"
+                  >
+                    {column.display ?? column.suffix}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {matrixRows.map(row => (
+                <tr key={row.root} className="border-t border-slate-100">
+                  <th className="sticky left-0 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-700 shadow-sm">
+                    {row.root}
+                  </th>
+                  {row.cells.map(cell => {
+                    const isHovered = hoveredNode === cell.id;
+                    const isPlaying = playingNode === cell.id;
+                    const baseClasses = 'w-full rounded-md border px-2 py-2 text-left font-medium transition focus:outline-none focus:ring-2 focus:ring-blue-500';
+                    const visualClasses = isPlaying
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : isHovered
+                        ? 'border-blue-300 bg-blue-50 text-blue-800'
+                        : 'border-slate-200 bg-white text-slate-800 hover:border-blue-200 hover:bg-blue-50';
 
-            return (
-              <path
-                key={`${edge.from}-${edge.to}-${edge.type}-${i}`}
-                d={`M ${fromNode.x} ${fromNode.y} L ${toNode.x} ${toNode.y}`}
-                stroke={isEdgeActive ? '#6b7280' : '#d1d5db'}
-                strokeWidth={isEdgeActive ? "2.5" : "1.5"}
-                fill="none"
-                opacity={isEdgeActive ? 0.9 : 0.45}
-                strokeDasharray={(() => {
-                  switch (edge.type) {
-                    case 'substitute': return "5,5";
-                    case 'extension': return "3,3";
-                    case 'alteration': return "7,3";
-                    case 'secondary': return "9,3";
-                    case 'diatonic': return "12,4";
-                    case 'leadingTone': return "2,6";
-                    case 'mixture': return "10,6";
-                    case 'neapolitan': return "4,8";
-                    case 'augmentedSixth': return "6,6";
-                    case 'chromaticMediant': return "14,4";
-                    default: return "none";
-                  }
-                })()}
-                markerEnd="url(#arrowhead)"
-              />
-            );
-          })}
-        </g>
-
-        {/* Draw nodes */}
-        <g className="nodes">
-          {nodes.map((node: ChordNode) => (
-            <g
-              key={node.id}
-              transform={`translate(${node.x},${node.y})`}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleNodeClick(node);
-              }}
-              onMouseEnter={() => setHoveredNode(node.id)}
-              onMouseLeave={() => setHoveredNode(prev => (prev === node.id ? null : prev))}
-              style={{ cursor: 'pointer' }}
-            >
-              {(() => {
-                const isHovered = node.id === hoveredNode;
-                const isPlaying = node.id === playingNode;
-                const isReachable = hoveredNode !== null && connectedToHover.has(node.id);
-                const fillColor = isPlaying
-                  ? '#4CAF50'
-                  : isHovered
-                    ? '#2563eb'
-                    : isReachable
-                      ? '#fef3c7'
-                      : '#ffffff';
-                const strokeColor = isPlaying
-                  ? '#166534'
-                  : isHovered
-                    ? '#1d4ed8'
-                    : isReachable
-                      ? '#facc15'
-                      : '#ffffff';
-                const strokeWidth = isHovered ? "2.5" : isReachable ? "2" : isPlaying ? "2.25" : "0";
-                const showStroke = isHovered || isPlaying || isReachable;
-                const textColor = (isHovered || isPlaying) ? '#ffffff' : '#1f2937';
-
-                return (
-                  <>
-                    <circle
-                      r={15}
-                      fill={fillColor}
-                      stroke={showStroke ? strokeColor : 'none'}
-                      strokeWidth={showStroke ? strokeWidth : 0}
-                    />
-                    <text
-                      textAnchor="middle"
-                      dy=".3em"
-                      fontSize="12"
-                      fill={textColor}
-                    >
-                      {node.label}
-                    </text>
-                  </>
-                );
-              })()}
-            </g>
-          ))}
-        </g>
-      </svg>
+                    return (
+                      <td key={cell.id} className="px-2 py-2">
+                        <button
+                          type="button"
+                          className={`${baseClasses} ${visualClasses}`}
+                          onClick={() => handleNodeClick(cell)}
+                          onMouseEnter={() => setHoveredNode(cell.id)}
+                          onMouseLeave={() => setHoveredNode(prev => (prev === cell.id ? null : prev))}
+                        >
+                          {cell.label}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
-};
+});
+
+ChordDiagram.displayName = 'ChordDiagram';
 
 export default ChordDiagram;

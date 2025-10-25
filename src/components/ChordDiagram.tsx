@@ -118,11 +118,12 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
   const [baseOctave, setBaseOctave] = useState<number>(2);
-  const [velocity, setVelocity] = useState<number>(96);
+  const [velocity, setVelocity] = useState<number>(56);
+  const [velocityVariance, setVelocityVariance] = useState<number>(10);
   const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(1);
   const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(10);
   const [useInternalAudio, setUseInternalAudio] = useState(true);
-  const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
 
   const {
     isSupported: isMidiSupported,
@@ -142,6 +143,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     noteDurationSeconds,
     baseOctave,
     velocity,
+    velocityVariance,
     arpeggioIntervalMs,
     arpeggioTimingJitterPercent,
     useInternalAudio,
@@ -202,6 +204,15 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     }
     const clamped = Math.max(0, Math.min(100, next));
     setArpeggioTimingJitterPercent(clamped);
+  }, []);
+
+  const handleVelocityVarianceChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const next = Number(event.target.value);
+    if (Number.isNaN(next)) {
+      return;
+    }
+    const clamped = Math.max(0, Math.min(100, next));
+    setVelocityVariance(clamped);
   }, []);
 
   const handleInternalAudioToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -306,6 +317,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
           durationSeconds: chordDurationSeconds,
           baseOctave,
           velocity,
+          velocityVariancePercent: velocityVariance,
           arpeggioIntervalMs,
           timingJitterPercent: arpeggioTimingJitterPercent,
         });
@@ -320,6 +332,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
         durationMs: chordDurationMs,
         baseOctave,
         velocity,
+        velocityVariancePercent: velocityVariance,
         arpeggioIntervalMs,
         timingJitterPercent: arpeggioTimingJitterPercent,
       });
@@ -348,6 +361,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     sustainSeconds,
     useInternalAudio,
     velocity,
+    velocityVariance,
   ]);
 
   const handleNodeClick = useCallback(async (node: ChordNode) => {
@@ -365,6 +379,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
       prev.noteDurationSeconds !== noteDurationSeconds ||
       prev.baseOctave !== baseOctave ||
       prev.velocity !== velocity ||
+      prev.velocityVariance !== velocityVariance ||
       prev.arpeggioIntervalMs !== arpeggioIntervalMs ||
       prev.arpeggioTimingJitterPercent !== arpeggioTimingJitterPercent ||
       prev.useInternalAudio !== useInternalAudio;
@@ -374,6 +389,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
         noteDurationSeconds,
         baseOctave,
         velocity,
+        velocityVariance,
         arpeggioIntervalMs,
         arpeggioTimingJitterPercent,
         useInternalAudio,
@@ -387,6 +403,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     noteDurationSeconds,
     baseOctave,
     velocity,
+    velocityVariance,
     arpeggioIntervalMs,
     arpeggioTimingJitterPercent,
     useInternalAudio,
@@ -401,6 +418,12 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
   }, [stopAllNotes, useInternalAudio]);
 
   useEffect(() => stopPlayback, [stopPlayback]);
+
+  useEffect(() => {
+    if (hasMidiAccess && midiOutputs.length > 0 && !selectedOutputId) {
+      selectMidiOutput(midiOutputs[0].id);
+    }
+  }, [hasMidiAccess, midiOutputs, selectedOutputId, selectMidiOutput]);
 
   const playChordById = useCallback(async (id: string) => {
     const node = nodeMap.get(id);
@@ -539,6 +562,27 @@ return (
               step={1}
               value={velocity}
               onChange={handleVelocityChange}
+              className="w-full"
+            />
+            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
+              Velocity Variance (%)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={velocityVariance}
+                onChange={handleVelocityVarianceChange}
+                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={velocityVariance}
+              onChange={handleVelocityVarianceChange}
               className="w-full"
             />
             <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">

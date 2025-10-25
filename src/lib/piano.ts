@@ -11,6 +11,7 @@ export interface PlayChordOptions {
   durationSeconds?: number;
   baseOctave?: number;
   velocity?: number;
+  velocityVariancePercent?: number;
   arpeggioIntervalMs?: number;
   timingJitterPercent?: number;
 }
@@ -148,6 +149,7 @@ class StringEnsemble {
       durationSeconds = 2,
       baseOctave = 1,
       velocity = 96,
+      velocityVariancePercent = 10,
       arpeggioIntervalMs = 120,
       timingJitterPercent = 0,
     }: PlayChordOptions = {}
@@ -169,6 +171,7 @@ class StringEnsemble {
 
       const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
       const jitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
+      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
       const perNoteDuration = Math.max(0.1, Math.min(duration, intervalSeconds * 1.5));
       let nextTime = Tone.now();
 
@@ -178,7 +181,9 @@ class StringEnsemble {
           nextTime += intervalSeconds * jitterFactor;
         }
 
-        const velocityOffset = Math.round(Math.random() * 10 - 5);
+        // Apply velocity variance based on percentage of base velocity
+        const maxVariance = baseVelocity * velocityVarianceRange;
+        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
         const noteVelocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
         const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
         const attackJitter = Math.random() * 0.03; // up to 30ms for subtle variation

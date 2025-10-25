@@ -65,7 +65,11 @@ const ChordDiagram = dynamic(
 
 export default function Home() {
   const diagramRef = useRef<ChordDiagramHandle>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const userIsAtBottomRef = useRef(true);
   const suppressNotebookAppendRef = useRef(false);
+  const [isConfigCollapsed, setIsConfigCollapsed] = useState(true);
   const [providers, setProviders] = useState<ChatProviderOption[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<ChatProvider>(DEFAULT_PROVIDER);
   const [selectedModel, setSelectedModel] = useState('');
@@ -88,11 +92,14 @@ export default function Home() {
     {
       id: createId(),
       role: 'assistant',
-      content: 'Hi! I’m your harmonic co-pilot. Play chords on the graph and I’ll keep track so we can workshop progressions together.',
+      content: "Hi! I'm your harmonic co-pilot. Play chords on the graph and I'll keep track so we can workshop progressions together.",
       timestamp: Date.now(),
     },
   ]);
   const [chordNotebook, setChordNotebook] = useState<ChordNotebookEntry[]>([]);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1800); // milliseconds between chords
+  const [editingChordId, setEditingChordId] = useState<string | null>(null);
+  const [editChordInput, setEditChordInput] = useState('');
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -204,6 +211,22 @@ export default function Home() {
       setAgentPrompt(activeAgent.prompt);
     }
   }, [agentProfiles, selectedAgentId]);
+
+  const handleMessagesScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const threshold = 50; // pixels from bottom
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    userIsAtBottomRef.current = isAtBottom;
+  }, []);
+
+  useEffect(() => {
+    // Only auto-scroll if user is at or near the bottom
+    if (userIsAtBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
 
   const appendMessage = useCallback((message: ChatMessage) => {
     setMessages(prev => [...prev, message]);
@@ -524,6 +547,97 @@ export default function Home() {
     setChordNotebook(prev => prev.filter(entry => entry.entryId !== entryId));
   }, []);
 
+  const handleStartEditChord = useCallback((entry: ChordNotebookEntry) => {
+    setEditingChordId(entry.entryId);
+    setEditChordInput(entry.chord.label);
+  }, []);
+
+  const handleSaveEditChord = useCallback((entryId: string) => {
+    const newLabel = editChordInput.trim();
+    if (!newLabel) {
+      setEditingChordId(null);
+      return;
+    }
+
+    setChordNotebook(prev => prev.map(entry => {
+      if (entry.entryId === entryId) {
+        // Create a new chord object with updated label and id
+        return {
+          ...entry,
+          chord: {
+            ...entry.chord,
+            id: newLabel,
+            label: newLabel,
+          },
+        };
+      }
+      return entry;
+    }));
+
+    setEditingChordId(null);
+    setEditChordInput('');
+  }, [editChordInput]);
+
+  const handleCancelEditChord = useCallback(() => {
+    setEditingChordId(null);
+    setEditChordInput('');
+  }, []);
+
+  const handleChordClick = useCallback(async (chordLabel: string) => {
+    suppressNotebookAppendRef.current = true;
+    try {
+      const chordEntry = chordNotebook.find(entry => entry.chord.label === chordLabel);
+      if (chordEntry) {
+        await diagramRef.current?.playChordById(chordEntry.chord.id);
+      }
+    } finally {
+      suppressNotebookAppendRef.current = false;
+    }
+  }, [chordNotebook]);
+
+  const renderMessageContent = useCallback((content: string) => {
+    // Regex to match chord patterns: C, Cm, C7, Cmaj7, C#m, Db, etc.
+    const chordPattern = /\b([A-G][#b]?(?:maj|min|m|dim|aug|sus)?[0-9]?(?:add|sus)?[0-9]?)\b/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = chordPattern.exec(content)) !== null) {
+      const chordLabel = match[1];
+      const chordExists = chordNotebook.some(entry => entry.chord.label === chordLabel);
+
+      // Add text before the chord
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
+
+      // Add clickable chord button if it exists in the notebook
+      if (chordExists) {
+        parts.push(
+          <button
+            key={`${match.index}-${chordLabel}`}
+            type="button"
+            onClick={() => handleChordClick(chordLabel)}
+            className="mx-0.5 inline-block rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+          >
+            {chordLabel}
+          </button>
+        );
+      } else {
+        parts.push(chordLabel);
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text
+    if (lastIndex < content.length) {
+      parts.push(content.substring(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : content;
+  }, [chordNotebook, handleChordClick]);
+
   return (
     <div className="min-h-screen bg-slate-50">
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-5 py-8 lg:px-8">
@@ -535,10 +649,146 @@ export default function Home() {
         </header>
 
         <section className="flex flex-col gap-6">
-          <section className="flex h-[560px] flex-col rounded-2xl bg-white p-4 shadow-md sm:p-6">
+          {/* Chord Playground - Top */}
+          <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
+              <div className="flex items-center gap-3">
+                <p className="text-xs text-slate-500">Captured chords displayed as plain text.</p>
+                <label className="flex items-center gap-2 text-xs text-slate-600">
+                  Speed:
+                  <input
+                    type="range"
+                    min="200"
+                    max="2000"
+                    step="100"
+                    value={playbackSpeed}
+                    onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+                    className="w-24 accent-emerald-600"
+                  />
+                  <span className="min-w-[3rem] text-xs font-medium text-slate-700">
+                    {(playbackSpeed / 1000).toFixed(1)}s
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    for (const entry of chordNotebook) {
+                      await handleNotebookPlay(entry.entryId);
+                      await new Promise(resolve => setTimeout(resolve, playbackSpeed));
+                    }
+                  }}
+                  disabled={chordNotebook.length === 0}
+                  className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  ▶ Play Sequence
+                </button>
+              </div>
+            </div>
+
+            {chordNotebook.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-500">
+                Play a chord to drop it here. Each entry will appear as a simple label.
+              </p>
+            ) : (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {chordNotebook.map(entry => (
+                  <div key={entry.entryId} className="flex items-center gap-1">
+                    {editingChordId === entry.entryId ? (
+                      <>
+                        <input
+                          type="text"
+                          value={editChordInput}
+                          onChange={(e) => setEditChordInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSaveEditChord(entry.entryId);
+                            } else if (e.key === 'Escape') {
+                              handleCancelEditChord();
+                            }
+                          }}
+                          placeholder="e.g. Cmaj7"
+                          className="w-20 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveEditChord(entry.entryId)}
+                          className="rounded-full border border-green-300 bg-green-50 px-2 text-xs font-semibold text-green-700 transition hover:bg-green-100"
+                          aria-label="Save edit"
+                        >
+                          ✓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelEditChord}
+                          className="rounded-full border border-red-300 bg-red-50 px-2 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+                          aria-label="Cancel edit"
+                        >
+                          ✕
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleNotebookPlay(entry.entryId)}
+                          className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                        >
+                          {entry.chord.label}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditChord(entry)}
+                          className="rounded-full border border-transparent px-2 text-xs font-semibold text-slate-500 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+                          aria-label={`Edit ${entry.chord.label}`}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleNotebookRemove(entry.entryId)}
+                          className="rounded-full border border-transparent px-2 text-xs font-semibold text-blue-500 transition hover:border-blue-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+                          aria-label={`Remove ${entry.chord.label} from playground`}
+                        >
+                          ×
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Chord Diagram (Left) and Chat (Right) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {/* Chord Diagram - Left */}
+            <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
+              <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
+            </section>
+
+            {/* Creative Chat - Right */}
+            <section className="flex flex-col rounded-2xl bg-white p-4 shadow-md sm:p-6" style={{ height: isConfigCollapsed ? '500px' : '400px' }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <h2 className="text-lg font-semibold text-slate-900">Creative Chat</h2>
-                <div className="flex flex-col items-start gap-2 text-xs font-medium text-slate-600">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">Creative Chat</h2>
+                  <button
+                    type="button"
+                    onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+                    aria-label={isConfigCollapsed ? 'Show configuration' : 'Hide configuration'}
+                  >
+                    {isConfigCollapsed ? '⚙️ Show Config' : '⚙️ Hide Config'}
+                  </button>
+                  {isConfigCollapsed && activeAgent && selectedModel && (
+                    <span className="text-xs text-slate-500">
+                      {activeAgent.label} • {modelOptions.find(m => m.id === selectedModel)?.label ?? selectedModel}
+                    </span>
+                  )}
+                </div>
+                {!isConfigCollapsed && (
+                  <div className="flex flex-col items-start gap-2 text-xs font-medium text-slate-600">
                   <div className="flex flex-wrap items-center gap-3">
                     <label className="flex items-center gap-2">
                       Provider
@@ -615,9 +865,11 @@ export default function Home() {
                     </button>
                 </div>
               </div>
-            </div>
+                )}
+              </div>
 
-            <label className="mt-4 flex flex-col gap-2 text-xs text-slate-600">
+            {!isConfigCollapsed && (
+              <label className="mt-4 flex flex-col gap-2 text-xs text-slate-600">
               <span className="text-sm font-semibold text-slate-700">Session instructions</span>
               <textarea
                 value={chatInstructions}
@@ -640,31 +892,32 @@ export default function Home() {
                 </button>
               </div>
             </label>
+            )}
 
-            {isLoadingProviders && (
+            {!isConfigCollapsed && isLoadingProviders && (
               <p className="mt-2 text-xs text-slate-500">Loading models...</p>
             )}
-              {!isLoadingProviders && providerError && (
+              {!isConfigCollapsed && !isLoadingProviders && providerError && (
                 <p className="mt-2 text-xs text-rose-600">{providerError}</p>
               )}
-              {!isLoadingProviders &&
+              {!isConfigCollapsed && !isLoadingProviders &&
                 !providerError &&
                 activeProvider &&
                 !activeProvider.available &&
                 activeProvider.error && (
                   <p className="mt-2 text-xs text-amber-600">{activeProvider.error}</p>
                 )}
-              {isLoadingAgents && (
+              {!isConfigCollapsed && isLoadingAgents && (
                 <p className="mt-2 text-xs text-slate-500">Loading agent profiles...</p>
               )}
-              {!isLoadingAgents && agentError && (
+              {!isConfigCollapsed && !isLoadingAgents && agentError && (
                 <p className="mt-2 text-xs text-rose-600">{agentError}</p>
               )}
-              {!isLoadingAgents && !agentError && activeAgent && (
+              {!isConfigCollapsed && !isLoadingAgents && !agentError && activeAgent && (
                 <p className="mt-2 text-xs text-slate-500">Agent: {activeAgent.label}</p>
               )}
 
-              {isCreatingAgent && (
+              {!isConfigCollapsed && isCreatingAgent && (
                 <form
                   onSubmit={handleCreateAgentSubmit}
                   className="mt-3 w-full rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 shadow-inner"
@@ -707,7 +960,11 @@ export default function Home() {
                 </form>
               )}
 
-              <div className="mt-3 flex-1 overflow-y-auto rounded-md bg-slate-100/60 p-3">
+              <div
+                ref={messagesContainerRef}
+                onScroll={handleMessagesScroll}
+                className="mt-3 flex-1 overflow-y-auto rounded-md bg-slate-100/60 p-3"
+              >
                 {messages
                   .filter(message => message.role !== 'system')
                   .map(message => (
@@ -723,11 +980,12 @@ export default function Home() {
                         <span className="capitalize">{message.role}</span>
                         <span suppressHydrationWarning>{new Date(message.timestamp).toLocaleTimeString()}</span>
                       </div>
-                      <p className="whitespace-pre-line leading-relaxed text-slate-800">
-                        {message.content}
-                      </p>
+                      <div className="whitespace-pre-line leading-relaxed text-slate-800">
+                        {renderMessageContent(message.content)}
+                      </div>
                     </article>
                   ))}
+                <div ref={messagesEndRef} />
               </div>
 
               <form onSubmit={handleSendMessage} className="mt-3 flex gap-2">
@@ -761,45 +1019,7 @@ export default function Home() {
                 <p className="mt-2 text-xs text-rose-600">{chatError}</p>
               )}
             </section>
-
-          <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
-              <p className="text-xs text-slate-500">Captured chords displayed as plain text.</p>
-            </div>
-
-            {chordNotebook.length === 0 ? (
-              <p className="mt-4 text-sm text-slate-500">
-                Play a chord to drop it here. Each entry will appear as a simple label.
-              </p>
-            ) : (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {chordNotebook.map(entry => (
-                  <div key={entry.entryId} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleNotebookPlay(entry.entryId)}
-                      className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                    >
-                      {entry.chord.label}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleNotebookRemove(entry.entryId)}
-                      className="rounded-full border border-transparent px-2 text-xs font-semibold text-blue-500 transition hover:border-blue-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
-                      aria-label={`Remove ${entry.chord.label} from playground`}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
-            <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
-          </section>
+          </div>
         </section>
       </main>
     </div>

@@ -64,6 +64,7 @@ interface SendChordOptions {
   durationMs?: number;
   baseOctave?: number;
   velocity?: number;
+  velocityVariancePercent?: number;
   arpeggioIntervalMs?: number;
   timingJitterPercent?: number;
 }
@@ -161,6 +162,7 @@ export const useWebMidiChordSender = () => {
         durationMs = 1500,
         baseOctave = 1,
         velocity = 96,
+        velocityVariancePercent = 10,
         arpeggioIntervalMs = 120,
         timingJitterPercent = 0,
       } = options;
@@ -177,6 +179,7 @@ export const useWebMidiChordSender = () => {
       const velocityByte = Math.max(1, Math.min(127, Math.round(velocity)));
       const intervalGap = Math.max(10, Math.min(5000, Math.round(arpeggioIntervalMs)));
       const timingJitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
+      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
 
       let accumulatedDelay = 0;
       midiNotes.forEach((noteNumber, index) => {
@@ -191,7 +194,9 @@ export const useWebMidiChordSender = () => {
           ? releaseDelay
           : Math.min(releaseDelay, gapBeforeNext);
 
-        const velocityOffset = Math.round(Math.random() * 10 - 5);
+        // Apply velocity variance based on percentage of base velocity
+        const maxVariance = velocityByte * velocityVarianceRange;
+        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
         const perNoteVelocity = Math.max(1, Math.min(127, velocityByte + velocityOffset));
 
         const onTimerId = window.setTimeout(() => {

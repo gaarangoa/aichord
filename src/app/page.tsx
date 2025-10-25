@@ -50,6 +50,14 @@ interface ChordNotebookEntry {
   entryId: string;
   chord: ChordTriggerEvent;
   addedAt: number;
+  tempoSeconds: number; // Individual tempo for this chord
+  notes?: string[]; // Optional: actual notes for the chord
+}
+
+interface ParsedChord {
+  name: string;
+  tempo: number;
+  notes: string[];
 }
 
 const DEFAULT_PROVIDER: ChatProvider = 'ollama';
@@ -97,9 +105,10 @@ export default function Home() {
     },
   ]);
   const [chordNotebook, setChordNotebook] = useState<ChordNotebookEntry[]>([]);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1800); // milliseconds between chords
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
+  const [editTempoInput, setEditTempoInput] = useState('1.8');
+  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -253,6 +262,7 @@ export default function Home() {
         entryId: createId(),
         chord,
         addedAt: Date.now(),
+        tempoSeconds: 1.8, // Default tempo
       },
     ]);
   }, []);
@@ -265,9 +275,11 @@ export default function Home() {
       }
 
       const trimmedInstructions = chatInstructions.trim();
-      const progressionLabels = chordNotebook.map(entry => entry.chord.label);
-      const progressionMessage = progressionLabels.length
-        ? `Chord progression: ${progressionLabels.join(' , ')}`
+      const progressionDetails = chordNotebook.map(entry =>
+        `${entry.chord.label} (${entry.tempoSeconds}s)`
+      );
+      const progressionMessage = progressionDetails.length
+        ? `Chord progression: ${progressionDetails.join(' → ')}`
         : 'Chord progression: (none selected yet)';
 
       const systemMessages = [
@@ -550,6 +562,7 @@ export default function Home() {
   const handleStartEditChord = useCallback((entry: ChordNotebookEntry) => {
     setEditingChordId(entry.entryId);
     setEditChordInput(entry.chord.label);
+    setEditTempoInput(entry.tempoSeconds.toString());
   }, []);
 
   const handleSaveEditChord = useCallback((entryId: string) => {
@@ -559,9 +572,12 @@ export default function Home() {
       return;
     }
 
+    const newTempo = parseFloat(editTempoInput);
+    const validTempo = !isNaN(newTempo) && newTempo > 0 ? newTempo : 1.8;
+
     setChordNotebook(prev => prev.map(entry => {
       if (entry.entryId === entryId) {
-        // Create a new chord object with updated label and id
+        // Create a new chord object with updated label, id, and tempo
         return {
           ...entry,
           chord: {
@@ -569,6 +585,7 @@ export default function Home() {
             id: newLabel,
             label: newLabel,
           },
+          tempoSeconds: validTempo,
         };
       }
       return entry;
@@ -576,11 +593,35 @@ export default function Home() {
 
     setEditingChordId(null);
     setEditChordInput('');
-  }, [editChordInput]);
+    setEditTempoInput('1.8');
+  }, [editChordInput, editTempoInput]);
 
   const handleCancelEditChord = useCallback(() => {
     setEditingChordId(null);
     setEditChordInput('');
+    setEditTempoInput('1.8');
+  }, []);
+
+  const handleDragStart = useCallback((index: number) => {
+    setDraggingIndex(index);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggingIndex === null || draggingIndex === index) return;
+
+    setChordNotebook(prev => {
+      const newNotebook = [...prev];
+      const draggedItem = newNotebook[draggingIndex];
+      newNotebook.splice(draggingIndex, 1);
+      newNotebook.splice(index, 0, draggedItem);
+      return newNotebook;
+    });
+    setDraggingIndex(index);
+  }, [draggingIndex]);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggingIndex(null);
   }, []);
 
   const handleChordClick = useCallback(async (chordLabel: string) => {
@@ -595,36 +636,69 @@ export default function Home() {
     }
   }, [chordNotebook]);
 
+  const handleAddParsedChord = useCallback((parsedChord: ParsedChord) => {
+    setChordNotebook(prev => [
+      ...prev,
+      {
+        entryId: createId(),
+        chord: {
+          id: parsedChord.name,
+          root: parsedChord.name.charAt(0),
+          label: parsedChord.name,
+          type: 'major' as ChordQuality, // Default, can be improved
+        },
+        addedAt: Date.now(),
+        tempoSeconds: parsedChord.tempo,
+        notes: parsedChord.notes,
+      },
+    ]);
+  }, []);
+
+  const parseChordDefinition = useCallback((chordStr: string): ParsedChord | null => {
+    // Parse format: [CHORD: name | tempo | notes]
+    const match = chordStr.match(/\[CHORD:\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^\]]+)\]/);
+    if (!match) return null;
+
+    const name = match[1].trim();
+    const tempo = parseFloat(match[2].trim());
+    const notes = match[3].trim().split(/\s+/);
+
+    if (!name || isNaN(tempo) || notes.length === 0) return null;
+
+    return { name, tempo, notes };
+  }, []);
+
   const renderMessageContent = useCallback((content: string) => {
-    // Regex to match chord patterns: C, Cm, C7, Cmaj7, C#m, Db, etc.
-    const chordPattern = /\b([A-G][#b]?(?:maj|min|m|dim|aug|sus)?[0-9]?(?:add|sus)?[0-9]?)\b/g;
+    // Regex to match [CHORD: name | tempo | notes]
+    const chordPattern = /\[CHORD:\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^\]]+)\]/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
+    let keyCounter = 0;
 
     while ((match = chordPattern.exec(content)) !== null) {
-      const chordLabel = match[1];
-      const chordExists = chordNotebook.some(entry => entry.chord.label === chordLabel);
-
       // Add text before the chord
       if (match.index > lastIndex) {
         parts.push(content.substring(lastIndex, match.index));
       }
 
-      // Add clickable chord button if it exists in the notebook
-      if (chordExists) {
+      const parsedChord = parseChordDefinition(match[0]);
+
+      if (parsedChord) {
+        // Add clickable chord button
         parts.push(
           <button
-            key={`${match.index}-${chordLabel}`}
+            key={`chord-${keyCounter++}`}
             type="button"
-            onClick={() => handleChordClick(chordLabel)}
-            className="mx-0.5 inline-block rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+            onClick={() => handleAddParsedChord(parsedChord)}
+            className="mx-1 inline-flex items-center gap-1 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 transition hover:border-blue-400 hover:bg-blue-100 hover:shadow-sm"
+            title={`Click to add ${parsedChord.name} to playground`}
           >
-            {chordLabel}
+            <span>{parsedChord.name}</span>
+            <span className="text-[10px] text-blue-500">({parsedChord.tempo}s)</span>
+            <span className="text-xs">+</span>
           </button>
         );
-      } else {
-        parts.push(chordLabel);
       }
 
       lastIndex = match.index + match[0].length;
@@ -636,7 +710,7 @@ export default function Home() {
     }
 
     return parts.length > 0 ? parts : content;
-  }, [chordNotebook, handleChordClick]);
+  }, [parseChordDefinition, handleAddParsedChord]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -654,28 +728,13 @@ export default function Home() {
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
               <div className="flex items-center gap-3">
-                <p className="text-xs text-slate-500">Captured chords displayed as plain text.</p>
-                <label className="flex items-center gap-2 text-xs text-slate-600">
-                  Speed:
-                  <input
-                    type="range"
-                    min="200"
-                    max="2000"
-                    step="100"
-                    value={playbackSpeed}
-                    onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
-                    className="w-24 accent-emerald-600"
-                  />
-                  <span className="min-w-[3rem] text-xs font-medium text-slate-700">
-                    {(playbackSpeed / 1000).toFixed(1)}s
-                  </span>
-                </label>
+                <p className="text-xs text-slate-500">Click chords to play, drag to reorder, edit tempo individually.</p>
                 <button
                   type="button"
                   onClick={async () => {
                     for (const entry of chordNotebook) {
                       await handleNotebookPlay(entry.entryId);
-                      await new Promise(resolve => setTimeout(resolve, playbackSpeed));
+                      await new Promise(resolve => setTimeout(resolve, entry.tempoSeconds * 1000));
                     }
                   }}
                   disabled={chordNotebook.length === 0}
@@ -692,67 +751,107 @@ export default function Home() {
               </p>
             ) : (
               <div className="mt-4 flex flex-wrap gap-2">
-                {chordNotebook.map(entry => (
-                  <div key={entry.entryId} className="flex items-center gap-1">
+                {chordNotebook.map((entry, index) => (
+                  <div
+                    key={entry.entryId}
+                    draggable={editingChordId !== entry.entryId}
+                    onDragStart={() => handleDragStart(index)}
+                    onDragOver={(e) => handleDragOver(e, index)}
+                    onDragEnd={handleDragEnd}
+                    className={`flex flex-col gap-1 rounded-lg border p-2 transition ${
+                      draggingIndex === index
+                        ? 'border-blue-400 bg-blue-100 opacity-50'
+                        : 'border-slate-200 bg-white'
+                    } ${editingChordId !== entry.entryId ? 'cursor-move' : ''}`}
+                  >
                     {editingChordId === entry.entryId ? (
-                      <>
-                        <input
-                          type="text"
-                          value={editChordInput}
-                          onChange={(e) => setEditChordInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              handleSaveEditChord(entry.entryId);
-                            } else if (e.key === 'Escape') {
-                              handleCancelEditChord();
-                            }
-                          }}
-                          placeholder="e.g. Cmaj7"
-                          className="w-20 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          autoFocus
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSaveEditChord(entry.entryId)}
-                          className="rounded-full border border-green-300 bg-green-50 px-2 text-xs font-semibold text-green-700 transition hover:bg-green-100"
-                          aria-label="Save edit"
-                        >
-                          ✓
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleCancelEditChord}
-                          className="rounded-full border border-red-300 bg-red-50 px-2 text-xs font-semibold text-red-700 transition hover:bg-red-100"
-                          aria-label="Cancel edit"
-                        >
-                          ✕
-                        </button>
-                      </>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={editChordInput}
+                            onChange={(e) => setEditChordInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleSaveEditChord(entry.entryId);
+                              } else if (e.key === 'Escape') {
+                                handleCancelEditChord();
+                              }
+                            }}
+                            placeholder="e.g. Cmaj7"
+                            className="w-20 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                            autoFocus
+                          />
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={editTempoInput}
+                            onChange={(e) => setEditTempoInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleSaveEditChord(entry.entryId);
+                              } else if (e.key === 'Escape') {
+                                handleCancelEditChord();
+                              }
+                            }}
+                            placeholder="1.8"
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                            className="w-16 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                          />
+                          <span className="text-[10px] text-slate-500">sec</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveEditChord(entry.entryId)}
+                            className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700 transition hover:bg-green-100"
+                            aria-label="Save edit"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEditChord}
+                            className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+                            aria-label="Cancel edit"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
                     ) : (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => handleNotebookPlay(entry.entryId)}
-                          className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                        >
-                          {entry.chord.label}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleStartEditChord(entry)}
-                          className="rounded-full border border-transparent px-2 text-xs font-semibold text-slate-500 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
-                          aria-label={`Edit ${entry.chord.label}`}
-                        >
-                          ✎
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleNotebookRemove(entry.entryId)}
-                          className="rounded-full border border-transparent px-2 text-xs font-semibold text-blue-500 transition hover:border-blue-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          aria-label={`Remove ${entry.chord.label} from playground`}
-                        >
-                          ×
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleNotebookPlay(entry.entryId)}
+                            className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                          >
+                            {entry.chord.label}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEditChord(entry)}
+                            className="rounded-full border border-transparent px-2 text-xs font-semibold text-slate-500 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+                            aria-label={`Edit ${entry.chord.label}`}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleNotebookRemove(entry.entryId)}
+                            className="rounded-full border border-transparent px-2 text-xs font-semibold text-blue-500 transition hover:border-blue-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+                            aria-label={`Remove ${entry.chord.label} from playground`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="text-center text-[10px] text-slate-500">
+                          {entry.tempoSeconds.toFixed(1)}s
+                        </div>
                       </>
                     )}
                   </div>

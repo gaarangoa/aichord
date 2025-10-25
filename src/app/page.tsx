@@ -56,28 +56,7 @@ const DEFAULT_PROVIDER: ChatProvider = 'ollama';
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-const CHORDS_MARKER = 'CHORDS:';
 
-const parseAssistantResponse = (input: string): { reasoning: string; chords: string | null } => {
-  const source = input ?? '';
-  const upper = source.toUpperCase();
-  const markerIndex = upper.indexOf(CHORDS_MARKER);
-
-  if (markerIndex === -1) {
-    return {
-      reasoning: source.trim(),
-      chords: null as string | null,
-    };
-  }
-
-  const reasoning = source.slice(0, markerIndex).trim();
-  const chords = source.slice(markerIndex + CHORDS_MARKER.length).trim();
-
-  return {
-    reasoning,
-    chords: chords.length > 0 ? chords : null,
-  };
-};
 
 const ChordDiagram = dynamic(
   () => import('@/components/ChordDiagram'),
@@ -278,9 +257,11 @@ export default function Home() {
           : []),
       ];
 
+      const filteredConversation = conversationMessages.filter(message => message.role !== 'system');
+
       const payloadMessages = [
         ...systemMessages,
-        ...conversationMessages.map(message => ({
+        ...filteredConversation.map(message => ({
           role: message.role,
           content: message.content,
         })),
@@ -337,35 +318,12 @@ export default function Home() {
           throw new Error('The selected model did not return any content.');
         }
 
-        const { reasoning, chords } = parseAssistantResponse(assistantContent);
-
-        if (reasoning) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: reasoning,
-            timestamp: Date.now(),
-          });
-        }
-
-        if (chords) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: chords,
-            timestamp: Date.now(),
-            variant: 'chords',
-          });
-        }
-
-        if (!reasoning && !chords) {
-          appendMessage({
-            id: createId(),
-            role: 'assistant',
-            content: assistantContent,
-            timestamp: Date.now(),
-          });
-        }
+        appendMessage({
+          id: createId(),
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: Date.now(),
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
         setChatError(message);
@@ -521,8 +479,10 @@ export default function Home() {
       appendMessage(userMessage);
       setChatInput('');
       setChatError(null);
+      const updatedMessages = [...messages, userMessage];
+      await sendConversationToAgent(updatedMessages);
     },
-    [activeAgent, agentPrompt, appendMessage, chatInput, isSending, selectedModel]
+    [activeAgent, agentPrompt, appendMessage, chatInput, isSending, messages, selectedModel, sendConversationToAgent]
   );
 
   const handleSendSessionSummary = useCallback(async () => {
@@ -543,8 +503,9 @@ export default function Home() {
     };
 
     appendMessage(briefingMessage);
-    await sendConversationToAgent([]);
-  }, [activeAgent, agentPrompt, appendMessage, isSending, selectedModel, sendConversationToAgent]);
+    const updatedMessages = [...messages, briefingMessage];
+    await sendConversationToAgent(updatedMessages);
+  }, [activeAgent, agentPrompt, appendMessage, isSending, messages, selectedModel, sendConversationToAgent]);
 
   const handleNotebookPlay = useCallback(async (entryId: string) => {
     const target = chordNotebook.find(entry => entry.entryId === entryId);
@@ -574,7 +535,7 @@ export default function Home() {
         </header>
 
         <section className="flex flex-col gap-6">
-          <section className="flex h-[440px] flex-col rounded-2xl bg-white p-4 shadow-md sm:p-6">
+          <section className="flex h-[560px] flex-col rounded-2xl bg-white p-4 shadow-md sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <h2 className="text-lg font-semibold text-slate-900">Creative Chat</h2>
                 <div className="flex flex-col items-start gap-2 text-xs font-medium text-slate-600">
@@ -748,18 +709,28 @@ export default function Home() {
 
               <div className="mt-3 flex-1 overflow-y-auto rounded-md bg-slate-100/60 p-3">
                 {messages
-                  .filter(message => message.variant === 'chords')
+                  .filter(message => message.role !== 'system')
                   .map(message => (
-                    <p
+                    <article
                       key={message.id}
-                      className="mb-2 whitespace-pre-line rounded-md border border-emerald-200 bg-white px-3 py-2 font-mono text-sm text-slate-800 last:mb-0"
+                      className={`mb-3 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm last:mb-0 ${
+                        message.role === 'user'
+                          ? 'border-blue-200 bg-blue-50/70'
+                          : 'border-emerald-200 bg-emerald-50/60'
+                      }`}
                     >
-                      {message.content}
-                    </p>
+                      <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+                        <span className="capitalize">{message.role}</span>
+                        <span suppressHydrationWarning>{new Date(message.timestamp).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="whitespace-pre-line leading-relaxed text-slate-800">
+                        {message.content}
+                      </p>
+                    </article>
                   ))}
               </div>
 
-              <form onSubmit={handleSendMessage} className="hidden">
+              <form onSubmit={handleSendMessage} className="mt-3 flex gap-2">
                 <input
                   value={chatInput}
                   onChange={event => setChatInput(event.target.value)}

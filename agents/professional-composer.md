@@ -12,10 +12,10 @@ You work collaboratively with the user to craft, refine, and perfect chord progr
 **DO THIS:**
 ```
 [CHORD: Cmaj7 | 1]
-C, 4, 0, whole, 98
-E, 4, 0, whole, 94
-G, 4, 0, whole, 96
-B, 4, 0, whole, 92
+C, 4, 0, whole, 70
+E, 4, 0, whole, 75
+G, 4, 0, whole, 73
+B, 4, 0, whole, 68
 [/CHORD]
 ```
 
@@ -135,53 +135,56 @@ Note, Octave, Beat, Duration, Velocity
 - `Velocity`: MIDI velocity (1-127). Controls note volume/intensity. Use this for musical dynamics:
   - `pp` (pianissimo): 40-50
   - `p` (piano): 50-65
-  - `mp` (mezzo-piano): 65-80
+  - `mp` (mezzo-piano): 65-80 ⭐ **Use this as default for most passages**
   - `mf` (mezzo-forte): 80-95
   - `f` (forte): 95-110
   - `ff` (fortissimo): 110-127
-  - Default: 96 (mf)
-  - Add natural variance (±5-10) within a chord for realism
+  - **Default: 72 (mp)** - softer and more musical
+  - Add natural variance (±8-15) within a chord for realism and expression
+  - **IMPORTANT**: Vary velocity between chords and within progressions to create dynamic shape (crescendo/diminuendo)
+  - Create contrast: softer chords (65-75) vs emphasized moments (85-100)
+  - Avoid using the same velocity for all notes - aim for musical expression
 
 ### Creative Possibilities
 
 **Arpeggiated Chord (quarter notes with crescendo):**
 ```
 [CHORD: Cmaj7 | 1]
-C, 4, 0, quarter, 88
-E, 4, 1, quarter, 92
-G, 4, 2, quarter, 96
-B, 4, 3, quarter, 100
+C, 4, 0, quarter, 65
+E, 4, 1, quarter, 72
+G, 4, 2, quarter, 78
+B, 4, 3, quarter, 85
 [/CHORD]
 ```
 
 **Block Chord (whole notes with natural variance):**
 ```
 [CHORD: Dm7 | 1]
-D, 4, 0, whole, 94
-F, 4, 0, whole, 98
-A, 4, 0, whole, 96
-C, 5, 0, whole, 92
+D, 4, 0, whole, 68
+F, 4, 0, whole, 74
+A, 4, 0, whole, 71
+C, 5, 0, whole, 66
 [/CHORD]
 ```
 
 **Eighth Note Arpeggio (with accent pattern):**
 ```
 [CHORD: G7 | 1]
-G, 4, 0, eighth, 100
-B, 4, 0.5, eighth, 85
-D, 5, 1, eighth, 95
-F, 5, 1.5, eighth, 80
-G, 5, 2, eighth, 98
+G, 4, 0, eighth, 82
+B, 4, 0.5, eighth, 68
+D, 5, 1, eighth, 76
+F, 5, 1.5, eighth, 64
+G, 5, 2, eighth, 80
 [/CHORD]
 ```
 
 **Mixed Durations (with dynamic shaping):**
 ```
 [CHORD: Cmaj | 2]
-C, 4, 0, half, 90
-E, 4, 2, quarter, 95
-G, 4, 3, quarter, 92
-C, 5, 4, whole, 85
+C, 4, 0, half, 70
+E, 4, 2, quarter, 76
+G, 4, 3, quarter, 73
+C, 5, 4, whole, 62
 [/CHORD]
 ```
 
@@ -206,25 +209,25 @@ C, 5, 4, whole, 85
 Example of what to do:
 ```
 ## Reasoning
-Here's a classic I-IV-V progression in C major with natural dynamics.
+Here's a classic I-IV-V progression in C major with natural dynamics, building from softer (mp) to slightly stronger (mf) on the dominant chord.
 
 ## Music
 [CHORD: Cmaj | 1]
-C, 4, 0, whole, 94
-E, 4, 0, whole, 98
-G, 4, 0, whole, 96
+C, 4, 0, whole, 68
+E, 4, 0, whole, 72
+G, 4, 0, whole, 70
 [/CHORD]
 
 [CHORD: Fmaj | 1]
-F, 4, 0, whole, 92
-A, 4, 0, whole, 96
-C, 5, 0, whole, 94
+F, 4, 0, whole, 70
+A, 4, 0, whole, 74
+C, 5, 0, whole, 72
 [/CHORD]
 
 [CHORD: Gmaj | 1]
-G, 4, 0, whole, 100
-B, 4, 0, whole, 96
-D, 5, 0, whole, 98
+G, 4, 0, whole, 78
+B, 4, 0, whole, 82
+D, 5, 0, whole, 80
 [/CHORD]
 ```
 
@@ -244,10 +247,10 @@ Classic ascending arpeggio with each note played as quarter notes, creating a fl
 
 ## Music
 [CHORD: Cmaj7 | 1]
-C, 4, 0, quarter, 90
-E, 4, 1, quarter, 94
-G, 4, 2, quarter, 98
-B, 4, 3, quarter, 102
+C, 4, 0, quarter, 65
+E, 4, 1, quarter, 72
+G, 4, 2, quarter, 78
+B, 4, 3, quarter, 85
 [/CHORD]
 ```
 
@@ -255,28 +258,28 @@ B, 4, 3, quarter, 102
 **You**:
 ```
 ## Reasoning
-Classic jazz progression in C major with seventh chords. Each chord lasts one measure with whole note voicings for a lush, sustained sound. Natural velocity variance adds realism.
+Classic jazz progression in C major with seventh chords. Each chord lasts one measure with whole note voicings for a lush, sustained sound. Natural velocity variance adds realism. Building dynamics from softer ii to stronger I resolution.
 
 ## Music
 [CHORD: Dm7 | 1]
-D, 4, 0, whole, 92
-F, 4, 0, whole, 96
-A, 4, 0, whole, 94
-C, 5, 0, whole, 90
+D, 4, 0, whole, 68
+F, 4, 0, whole, 72
+A, 4, 0, whole, 70
+C, 5, 0, whole, 66
 [/CHORD]
 
 [CHORD: G7 | 1]
-G, 4, 0, whole, 98
-B, 4, 0, whole, 96
-D, 5, 0, whole, 94
-F, 5, 0, whole, 92
+G, 4, 0, whole, 76
+B, 4, 0, whole, 80
+D, 5, 0, whole, 78
+F, 5, 0, whole, 74
 [/CHORD]
 
 [CHORD: Cmaj7 | 1]
-C, 4, 0, whole, 96
-E, 4, 0, whole, 94
-G, 4, 0, whole, 98
-B, 4, 0, whole, 92
+C, 4, 0, whole, 82
+E, 4, 0, whole, 78
+G, 4, 0, whole, 84
+B, 4, 0, whole, 76
 [/CHORD]
 ```
 
@@ -288,14 +291,14 @@ Syncopated eighth note pattern creating rhythmic interest. Using G major chord t
 
 ## Music
 [CHORD: Gmaj | 1]
-G, 4, 0, eighth, 100
-B, 4, 0.5, eighth, 85
-D, 5, 1, eighth, 95
-G, 4, 1.5, eighth, 80
-B, 4, 2, eighth, 98
-D, 5, 2.5, eighth, 82
-G, 5, 3, eighth, 92
-B, 4, 3.5, eighth, 86
+G, 4, 0, eighth, 80
+B, 4, 0.5, eighth, 66
+D, 5, 1, eighth, 74
+G, 4, 1.5, eighth, 62
+B, 4, 2, eighth, 78
+D, 5, 2.5, eighth, 64
+G, 5, 3, eighth, 72
+B, 4, 3.5, eighth, 68
 [/CHORD]
 ```
 
@@ -303,33 +306,33 @@ B, 4, 3.5, eighth, 86
 **You**:
 ```
 ## Reasoning
-Emotional ballad progression in C major. Using dotted half notes (3 beats each) to create a slow, expressive feel with space for the final beat. Gentle dynamics for intimacy.
+Emotional ballad progression in C major. Using dotted half notes (3 beats each) to create a slow, expressive feel with space for the final beat. Gentle dynamics for intimacy, with subtle dynamic shaping across the progression.
 
 ## Music
 [CHORD: Cmaj | 1]
-C, 4, 0, dotted-half, 75
-E, 4, 0, dotted-half, 78
-G, 4, 0, dotted-half, 76
+C, 4, 0, dotted-half, 58
+E, 4, 0, dotted-half, 62
+G, 4, 0, dotted-half, 60
 [/CHORD]
 
 [CHORD: Am7 | 1]
-A, 3, 0, dotted-half, 72
-C, 4, 0, dotted-half, 76
-E, 4, 0, dotted-half, 74
-G, 4, 0, dotted-half, 70
+A, 3, 0, dotted-half, 54
+C, 4, 0, dotted-half, 60
+E, 4, 0, dotted-half, 57
+G, 4, 0, dotted-half, 52
 [/CHORD]
 
 [CHORD: Fmaj7 | 1]
-F, 4, 0, dotted-half, 78
-A, 4, 0, dotted-half, 76
-C, 5, 0, dotted-half, 80
-E, 5, 0, dotted-half, 74
+F, 4, 0, dotted-half, 64
+A, 4, 0, dotted-half, 68
+C, 5, 0, dotted-half, 70
+E, 5, 0, dotted-half, 66
 [/CHORD]
 
 [CHORD: Gmaj | 1]
-G, 4, 0, dotted-half, 82
-B, 4, 0, dotted-half, 80
-D, 5, 0, dotted-half, 84
+G, 4, 0, dotted-half, 72
+B, 4, 0, dotted-half, 76
+D, 5, 0, dotted-half, 78
 [/CHORD]
 ```
 

@@ -45,6 +45,7 @@ interface ChatMessage {
   chord?: ChordTriggerEvent;
   timestamp: number;
   variant?: ChatMessageVariant;
+  tokens?: number; // Token count for this message
 }
 
 type NoteDuration = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth' |
@@ -64,6 +65,7 @@ interface ChordNotebookEntry {
   addedAt: number;
   measures: number;        // Number of measures/bars this chord spans
   noteSequence?: NoteEvent[]; // Detailed note sequence
+  isSilence?: boolean;     // True if this is a rest/silence
 }
 
 interface ParsedChord {
@@ -120,14 +122,9 @@ export default function Home() {
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
   const [editMeasuresInput, setEditMeasuresInput] = useState('1');
-  const [editingNoteIndex, setEditingNoteIndex] = useState<number | null>(null);
-  const [editNoteData, setEditNoteData] = useState<NoteEvent | null>(null);
-  const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [isPlayingSequence, setIsPlayingSequence] = useState(false);
-  const [currentlyPlayingChordId, setCurrentlyPlayingChordId] = useState<string | null>(null);
   const [expandedChordId, setExpandedChordId] = useState<string | null>(null);
   const [bpm, setBpm] = useState<number>(120); // Beats per minute
-  const [currentPlayingNoteBeat, setCurrentPlayingNoteBeat] = useState<number | null>(null);
   const [currentPlaybackBeat, setCurrentPlaybackBeat] = useState<number | null>(null); // Continuous playback position
   const musicSheetRef = useRef<HTMLDivElement>(null);
   const sequenceAbortRef = useRef<boolean>(false);
@@ -135,6 +132,8 @@ export default function Home() {
   const playbackAnimationRef = useRef<number | null>(null);
   const [octaveTranspose, setOctaveTranspose] = useState<number>(0); // Octave transposition (-2 to +2)
   const [transposeDisplay, setTransposeDisplay] = useState<boolean>(false); // If true, also transpose the display (default: transpose sound only)
+  const [draggingChordIndex, setDraggingChordIndex] = useState<number | null>(null);
+  const [relativeVelocity, setRelativeVelocity] = useState<number | null>(null); // Relative velocity adjustment
 
   // Convert musical duration to beats
   const durationToBeats = useCallback((duration: NoteDuration): number => {
@@ -155,6 +154,45 @@ export default function Home() {
   const beatsToMs = useCallback((beats: number): number => {
     return (beats / bpm) * 60000;
   }, [bpm]);
+
+  // Calculate median velocity across all notes
+  const currentMedianVelocity = useMemo(() => {
+    const allVelocities: number[] = [];
+    chordNotebook.forEach(entry => {
+      if (entry.noteSequence) {
+        entry.noteSequence.forEach(note => {
+          allVelocities.push(note.velocity);
+        });
+      }
+    });
+
+    if (allVelocities.length === 0) return 96; // Default
+
+    allVelocities.sort((a, b) => a - b);
+    const mid = Math.floor(allVelocities.length / 2);
+    return allVelocities.length % 2 === 0
+      ? Math.round((allVelocities[mid - 1] + allVelocities[mid]) / 2)
+      : allVelocities[mid];
+  }, [chordNotebook]);
+
+  // Apply relative velocity adjustment to all notes
+  const handleRelativeVelocityChange = useCallback((targetVelocity: number) => {
+    const offset = targetVelocity - currentMedianVelocity;
+
+    setChordNotebook(prev => prev.map(entry => {
+      if (!entry.noteSequence) return entry;
+
+      return {
+        ...entry,
+        noteSequence: entry.noteSequence.map(note => ({
+          ...note,
+          velocity: Math.max(1, Math.min(127, note.velocity + offset))
+        }))
+      };
+    }));
+
+    setRelativeVelocity(targetVelocity);
+  }, [currentMedianVelocity]);
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -278,8 +316,9 @@ export default function Home() {
 
   useEffect(() => {
     // Only auto-scroll if user is at or near the bottom
-    if (userIsAtBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (userIsAtBottomRef.current && messagesContainerRef.current) {
+      // Scroll the container to the bottom, not the whole page
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
   }, [messages]);
 
@@ -300,6 +339,24 @@ export default function Home() {
   const modelOptions = activeProvider?.models ?? [];
   const isSendDisabled =
     isSending || !chatInput.trim() || !selectedModel || !agentPrompt || !activeAgent;
+
+  const handleAddSilence = useCallback((measures: number = 1) => {
+    setChordNotebook(prev => [
+      ...prev,
+      {
+        entryId: createId(),
+        chord: {
+          id: 'rest',
+          root: '',
+          label: 'Rest',
+          type: 'major' as ChordQuality,
+        },
+        addedAt: Date.now(),
+        measures: measures,
+        isSilence: true,
+      },
+    ]);
+  }, []);
 
   const handleAddChordToNotebook = useCallback((chord: ChordTriggerEvent) => {
     // Generate note sequence from chord intervals
@@ -357,7 +414,13 @@ export default function Home() {
         const variancePercent = 10;
         const maxVariance = baseVelocity * (variancePercent / 100);
         const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
-        const velocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+        let velocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+
+        // Apply relative velocity adjustment if set
+        if (relativeVelocity !== null) {
+          const offset = relativeVelocity - currentMedianVelocity;
+          velocity = Math.max(1, Math.min(127, velocity + offset));
+        }
 
         return {
           note: noteName,
@@ -381,7 +444,7 @@ export default function Home() {
         noteSequence: generateNoteSequence(chord),
       },
     ]);
-  }, []);
+  }, [relativeVelocity, currentMedianVelocity]);
 
   const sendConversationToAgent = useCallback(
     async (conversationMessages: ChatMessage[]) => {
@@ -469,11 +532,28 @@ export default function Home() {
           throw new Error('The selected model did not return any content.');
         }
 
+        // Extract token usage from response
+        let tokenCount: number | undefined;
+        try {
+          const parsedResponse = JSON.parse(raw) as {
+            message?: { content?: string };
+            eval_count?: number;
+            prompt_eval_count?: number;
+          };
+          // Ollama returns eval_count (output tokens) and prompt_eval_count (input tokens)
+          if (parsedResponse.eval_count !== undefined) {
+            tokenCount = parsedResponse.eval_count;
+          }
+        } catch {
+          // If parsing fails, token count remains undefined
+        }
+
         appendMessage({
           id: createId(),
           role: 'assistant',
           content: assistantContent,
           timestamp: Date.now(),
+          tokens: tokenCount,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
@@ -620,11 +700,15 @@ export default function Home() {
       }
 
       const userText = chatInput.trim();
+      // Rough approximation: ~4 characters per token
+      const estimatedTokens = Math.ceil(userText.length / 4);
+
       const userMessage: ChatMessage = {
         id: createId(),
         role: 'user',
         content: userText,
         timestamp: Date.now(),
+        tokens: estimatedTokens,
       };
 
       appendMessage(userMessage);
@@ -662,6 +746,12 @@ export default function Home() {
     const target = chordNotebook.find(entry => entry.entryId === entryId);
     if (!target) {
       console.warn('Chord entry not found:', entryId);
+      return;
+    }
+
+    // Skip silences - don't play anything
+    if (target.isSilence) {
+      console.log('Skipping silence/rest');
       return;
     }
 
@@ -706,8 +796,7 @@ export default function Home() {
     setChordNotebook([]);
     setEditingChordId(null);
     setExpandedChordId(null);
-    setCurrentlyPlayingChordId(null);
-    setCurrentPlayingNoteBeat(null);
+    setCurrentPlaybackBeat(null);
   }, []);
 
   const handleStartEditChord = useCallback((entry: ChordNotebookEntry) => {
@@ -753,39 +842,37 @@ export default function Home() {
     setEditMeasuresInput('1');
   }, []);
 
-  const handleDragStart = useCallback((index: number) => {
-    setDraggingIndex(index);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (draggingIndex === null || draggingIndex === index) return;
-
-    setChordNotebook(prev => {
-      const newNotebook = [...prev];
-      const draggedItem = newNotebook[draggingIndex];
-      newNotebook.splice(draggingIndex, 1);
-      newNotebook.splice(index, 0, draggedItem);
-      return newNotebook;
-    });
-    setDraggingIndex(index);
-  }, [draggingIndex]);
-
-  const handleDragEnd = useCallback(() => {
-    setDraggingIndex(null);
-  }, []);
-
   const handleStopSequence = useCallback(() => {
     sequenceAbortRef.current = true;
     setIsPlayingSequence(false);
-    setCurrentlyPlayingChordId(null);
-    setCurrentPlayingNoteBeat(null);
     setCurrentPlaybackBeat(null);
     playbackStartTimeRef.current = null;
     if (playbackAnimationRef.current !== null) {
       cancelAnimationFrame(playbackAnimationRef.current);
       playbackAnimationRef.current = null;
     }
+  }, []);
+
+  const handleChordDragStart = useCallback((index: number) => {
+    setDraggingChordIndex(index);
+  }, []);
+
+  const handleChordDragOver = useCallback((e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    if (draggingChordIndex === null || draggingChordIndex === targetIndex) return;
+
+    setChordNotebook(prev => {
+      const newNotebook = [...prev];
+      const draggedItem = newNotebook[draggingChordIndex];
+      newNotebook.splice(draggingChordIndex, 1);
+      newNotebook.splice(targetIndex, 0, draggedItem);
+      return newNotebook;
+    });
+    setDraggingChordIndex(targetIndex);
+  }, [draggingChordIndex]);
+
+  const handleChordDragEnd = useCallback(() => {
+    setDraggingChordIndex(null);
   }, []);
 
   const handlePlaySequence = useCallback(async () => {
@@ -796,17 +883,14 @@ export default function Home() {
 
     // Calculate total beats for the entire progression
     const totalBeats = chordNotebook.reduce((sum, entry) => sum + entry.measures * 4, 0);
-    const totalDurationMs = beatsToMs(totalBeats);
 
     // Start playback animation
-    const startTime = performance.now();
-    playbackStartTimeRef.current = startTime;
+    playbackStartTimeRef.current = performance.now();
 
     // Smooth animation loop for the playback line
     const animate = () => {
       if (sequenceAbortRef.current || playbackStartTimeRef.current === null) {
         setCurrentPlaybackBeat(null);
-        setCurrentPlayingNoteBeat(null);
         return;
       }
 
@@ -816,7 +900,6 @@ export default function Home() {
       if (currentBeat >= totalBeats) {
         // Playback complete
         setCurrentPlaybackBeat(null);
-        setCurrentPlayingNoteBeat(null);
         return;
       }
 
@@ -835,12 +918,8 @@ export default function Home() {
 
     playbackAnimationRef.current = requestAnimationFrame(animate);
 
-    let accumulatedBeats = 0;
-
     for (const entry of chordNotebook) {
       if (sequenceAbortRef.current) break;
-
-      setCurrentlyPlayingChordId(entry.entryId);
 
       await handleNotebookPlay(entry.entryId);
 
@@ -848,14 +927,10 @@ export default function Home() {
       const measureBeats = entry.measures * 4;
       const waitTime = beatsToMs(measureBeats);
       await new Promise(resolve => setTimeout(resolve, waitTime));
-
-      accumulatedBeats += measureBeats;
     }
 
     setIsPlayingSequence(false);
-    setCurrentlyPlayingChordId(null);
     setCurrentPlaybackBeat(null);
-    setCurrentPlayingNoteBeat(null);
     playbackStartTimeRef.current = null;
     if (playbackAnimationRef.current !== null) {
       cancelAnimationFrame(playbackAnimationRef.current);
@@ -864,6 +939,16 @@ export default function Home() {
   }, [chordNotebook, handleNotebookPlay, beatsToMs]);
 
   const handleAddParsedChord = useCallback((parsedChord: ParsedChord) => {
+    // Apply relative velocity adjustment to parsed notes if set
+    let adjustedNoteSequence = parsedChord.noteSequence;
+    if (relativeVelocity !== null && adjustedNoteSequence) {
+      const offset = relativeVelocity - currentMedianVelocity;
+      adjustedNoteSequence = adjustedNoteSequence.map(note => ({
+        ...note,
+        velocity: Math.max(1, Math.min(127, note.velocity + offset))
+      }));
+    }
+
     setChordNotebook(prev => [
       ...prev,
       {
@@ -876,10 +961,10 @@ export default function Home() {
         },
         addedAt: Date.now(),
         measures: parsedChord.measures,
-        noteSequence: parsedChord.noteSequence,
+        noteSequence: adjustedNoteSequence,
       },
     ]);
-  }, []);
+  }, [relativeVelocity, currentMedianVelocity]);
 
   const parseChordDefinition = useCallback((chordBlock: string): ParsedChord | null => {
     // Parse format:
@@ -999,8 +1084,8 @@ export default function Home() {
         </header>
 
         <section className="flex flex-col gap-6">
-          {/* Chord Playground - Top */}
-          <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
+          {/* Chord Playground - First */}
+          <section className="w-full rounded-2xl bg-white p-4 shadow-md sm:p-6">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
               <div className="flex items-center gap-3">
@@ -1019,6 +1104,14 @@ export default function Home() {
                   />
                 </div>
                 <p className="text-xs text-slate-500">Click chords to play, drag to reorder.</p>
+                <button
+                  type="button"
+                  onClick={() => handleAddSilence(1)}
+                  className="rounded-md bg-slate-500 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-600"
+                  title="Add 1 measure rest"
+                >
+                  + Rest
+                </button>
                 {chordNotebook.length > 0 && (
                   <button
                     type="button"
@@ -1049,21 +1142,14 @@ export default function Home() {
               </div>
             </div>
 
-            {chordNotebook.length === 0 ? (
-              <p className="mt-4 text-sm text-slate-500">
-                Play a chord from the diagram or add chords from the chat. They will appear in the music sheet below.
-              </p>
-            ) : null}
-
-            {/* Music Sheet Visualization - Main Interface */}
-            {chordNotebook.length > 0 && (
-              <div className="mt-6 border-t border-slate-200 pt-6">
+            {/* Music Sheet Visualization - Always Visible */}
+            <div className="mt-6 border-t border-slate-200 pt-6">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-semibold text-slate-700">Music Sheet</h3>
                     <span className="text-[10px] font-medium text-slate-500 px-2 py-0.5 rounded bg-slate-200">4/4 Time</span>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 flex-wrap">
                     <div className="flex items-center gap-2">
                       <label className="text-xs font-medium text-slate-600">
                         Transpose:
@@ -1089,6 +1175,28 @@ export default function Home() {
                       />
                       Transpose display too
                     </label>
+                    <div className="flex items-center gap-2 border-l border-slate-300 pl-4">
+                      <label className="text-xs font-medium text-slate-600" title="Adjust all note velocities relative to the median">
+                        Relative Velocity:
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="127"
+                        value={relativeVelocity ?? currentMedianVelocity}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value) || currentMedianVelocity;
+                          handleRelativeVelocityChange(value);
+                        }}
+                        onBlur={() => setRelativeVelocity(null)}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs w-16"
+                        placeholder={currentMedianVelocity.toString()}
+                        title="Set target median velocity (current median will be adjusted proportionally)"
+                      />
+                      <span className="text-[10px] text-slate-500">
+                        (current median: {currentMedianVelocity})
+                      </span>
+                    </div>
                   </div>
                 </div>
                 <div className="overflow-x-auto" ref={musicSheetRef}>
@@ -1104,10 +1212,17 @@ export default function Home() {
                       }
 
                       const fullNotes: FullNoteData[] = [];
+                      const silences: Array<{ beat: number; measures: number }> = [];
                       let accumulatedBeats = 0;
 
                       chordNotebook.forEach(entry => {
-                        if (entry.noteSequence && entry.noteSequence.length > 0) {
+                        if (entry.isSilence) {
+                          // Track silence position
+                          silences.push({
+                            beat: accumulatedBeats,
+                            measures: entry.measures
+                          });
+                        } else if (entry.noteSequence && entry.noteSequence.length > 0) {
                           entry.noteSequence.forEach(note => {
                             const absoluteBeat = accumulatedBeats + note.beat;
                             const displayOctave = transposeDisplay ? note.octave + octaveTranspose : note.octave;
@@ -1242,6 +1357,38 @@ export default function Home() {
                         );
                       };
 
+                      // Show empty state if no chords
+                      if (fullNotes.length === 0) {
+                        return (
+                          <div className="relative" style={{ minWidth: '800px', height: '120px' }}>
+                            {/* Treble clef symbol */}
+                            <div className="absolute left-0 top-3 text-3xl font-serif text-slate-700">
+                              𝄞
+                            </div>
+
+                            {/* Staff lines */}
+                            <div className="relative ml-12" style={{ height: '120px' }}>
+                              {staffLinePositions.map((_, idx) => (
+                                <div
+                                  key={idx}
+                                  className="absolute border-t border-slate-400"
+                                  style={{
+                                    top: `${54 + idx * 10}px`,
+                                    left: 0,
+                                    width: '750px'
+                                  }}
+                                />
+                              ))}
+
+                              {/* Empty state message */}
+                              <div className="absolute top-16 left-1/2 transform -translate-x-1/2 text-sm text-slate-400 italic">
+                                Play a chord from the diagram or add chords from the chat...
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       return (
                         <div className="relative" style={{ minWidth: `${totalWidth}px` }}>
                           {/* Treble clef symbol */}
@@ -1251,7 +1398,7 @@ export default function Home() {
 
                           {/* Staff lines - extended across all notes */}
                           <div className="relative ml-12" style={{ height: '120px' }}>
-                            {staffLinePositions.map((linePos, idx) => (
+                            {staffLinePositions.map((_, idx) => (
                               <div
                                 key={idx}
                                 className="absolute border-t border-slate-400"
@@ -1277,8 +1424,8 @@ export default function Home() {
                               />
                             ))}
 
-                            {/* Playback position line (like Guitar Pro) */}
-                            {currentPlaybackBeat !== null && (
+                            {/* Playback position line (hidden) */}
+                            {/* {currentPlaybackBeat !== null && (
                               <div
                                 className="absolute border-l-4 border-red-500 opacity-70 z-10"
                                 style={{
@@ -1289,7 +1436,37 @@ export default function Home() {
                                   boxShadow: '0 0 10px rgba(239, 68, 68, 0.5)',
                                 }}
                               />
-                            )}
+                            )} */}
+
+                            {/* Rest symbols */}
+                            {silences.map((silence, idx) => {
+                              const xPosition = silence.beat * beatSpacing;
+                              const measures = silence.measures;
+
+                              // Whole rest symbol (hanging from 4th line)
+                              return (
+                                <div
+                                  key={`rest-${idx}`}
+                                  className="absolute"
+                                  style={{ left: `${xPosition + 10}px`, top: '64px' }}
+                                >
+                                  <div
+                                    className="bg-slate-700"
+                                    style={{
+                                      width: '12px',
+                                      height: '6px',
+                                      borderRadius: '1px'
+                                    }}
+                                    title={`${measures} measure rest`}
+                                  />
+                                  {measures > 1 && (
+                                    <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 text-[10px] font-bold text-slate-700">
+                                      {measures}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
 
                             {/* Notes */}
                             <div className="absolute top-0 left-0 w-full">
@@ -1342,7 +1519,7 @@ export default function Home() {
                           </div>
 
                           {/* Chord labels at the bottom - only show on first note of each measure */}
-                          <div className="relative mt-8 ml-12" style={{ height: '20px' }}>
+                          <div className="relative mt-8 ml-12" style={{ height: '30px' }}>
                             {(() => {
                               // Track which chords we've already shown in each measure
                               const shownLabels = new Map<number, Set<string>>(); // measure -> set of chord labels
@@ -1367,22 +1544,51 @@ export default function Home() {
                               return labelsToShow.map((item, idx) => {
                                 // Find the chord entry for this label
                                 const chordEntry = chordNotebook.find(entry => entry.chord.label === item.label);
+                                const chordIndex = chordNotebook.findIndex(entry => entry.chord.label === item.label);
+                                const isDragging = draggingChordIndex === chordIndex;
+                                const isRest = chordEntry?.isSilence;
 
                                 return (
-                                  <button
+                                  <div
                                     key={idx}
-                                    type="button"
-                                    onClick={() => {
-                                      if (chordEntry) {
-                                        setExpandedChordId(chordEntry.entryId === expandedChordId ? null : chordEntry.entryId);
-                                      }
-                                    }}
-                                    className="absolute text-[10px] font-semibold text-slate-700 hover:text-blue-600 hover:underline cursor-pointer transition-colors"
+                                    className={`absolute ${isDragging ? 'opacity-50' : ''}`}
                                     style={{ left: `${item.beat * beatSpacing - 10}px` }}
-                                    title="Click to edit chord"
+                                    draggable={true}
+                                    onDragStart={() => handleChordDragStart(chordIndex)}
+                                    onDragOver={(e) => handleChordDragOver(e, chordIndex)}
+                                    onDragEnd={handleChordDragEnd}
                                   >
-                                    {item.label}
-                                  </button>
+                                    {/* Play button dot (not shown for rests) */}
+                                    {chordEntry && !isRest && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleNotebookPlay(chordEntry.entryId);
+                                        }}
+                                        className="absolute -top-3 left-0 w-3 h-3 rounded-full bg-emerald-500 hover:bg-emerald-600 transition-colors shadow-sm hover:scale-110 cursor-grab active:cursor-grabbing"
+                                        title="Play chord (drag to reorder)"
+                                        style={{ transform: 'translateX(50%)' }}
+                                      >
+                                        <span className="sr-only">Play</span>
+                                      </button>
+                                    )}
+
+                                    {/* Chord label */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (chordEntry) {
+                                          setExpandedChordId(chordEntry.entryId === expandedChordId ? null : chordEntry.entryId);
+                                        }
+                                      }}
+                                      className={`text-[10px] font-semibold ${isRest ? 'text-slate-500 italic' : 'text-slate-700'} hover:text-blue-600 hover:underline cursor-grab active:cursor-grabbing transition-colors`}
+                                      title="Click to edit, drag to reorder"
+                                    >
+                                      {item.label}
+                                    </button>
+                                  </div>
                                 );
                               });
                             })()}
@@ -1659,18 +1865,10 @@ export default function Home() {
                   );
                 })()}
               </div>
-            )}
           </section>
 
-          {/* Chord Diagram (Left) and Chat (Right) */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            {/* Chord Diagram - Left */}
-            <section className="rounded-2xl bg-white p-4 shadow-md sm:p-6">
-              <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
-            </section>
-
-            {/* Creative Chat - Right */}
-            <section className="flex flex-col rounded-2xl bg-white p-4 shadow-md sm:p-6" style={{ height: isConfigCollapsed ? '500px' : '400px' }}>
+          {/* Creative Chat - Second */}
+          <section className="flex flex-col w-full rounded-2xl bg-white p-4 shadow-md sm:p-6" style={{ height: isConfigCollapsed ? '500px' : '400px' }}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <h2 className="text-lg font-semibold text-slate-900">Creative Chat</h2>
@@ -1879,7 +2077,14 @@ export default function Home() {
                     >
                       <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
                         <span className="capitalize">{message.role}</span>
-                        <span suppressHydrationWarning>{new Date(message.timestamp).toLocaleTimeString()}</span>
+                        <div className="flex items-center gap-2">
+                          {message.tokens !== undefined && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-mono">
+                              {message.tokens.toLocaleString()} tokens
+                            </span>
+                          )}
+                          <span suppressHydrationWarning>{new Date(message.timestamp).toLocaleTimeString()}</span>
+                        </div>
                       </div>
                       <div className="whitespace-pre-line leading-relaxed text-slate-800">
                         {renderMessageContent(message.content)}
@@ -1919,8 +2124,12 @@ export default function Home() {
               {chatError && (
                 <p className="mt-2 text-xs text-rose-600">{chatError}</p>
               )}
-            </section>
-          </div>
+          </section>
+
+          {/* Chord Diagram - Third */}
+          <section className="w-full rounded-2xl bg-white p-4 shadow-md sm:p-6">
+            <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
+          </section>
         </section>
       </main>
     </div>

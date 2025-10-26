@@ -29,7 +29,7 @@ export interface ChordTriggerEvent {
 export interface ChordDiagramHandle {
   playChordById: (id: string) => Promise<void>;
   sendMidiNoteSequence: (
-    notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+    notes: Array<{ note: string; octave: number; startOffset: number; duration: number; velocity?: number }>,
     options?: { velocity?: number; velocityVariancePercent?: number }
   ) => void;
 }

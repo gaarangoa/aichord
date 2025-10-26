@@ -220,18 +220,15 @@ export const useWebMidiChordSender = () => {
 
   const sendNoteSequence = useCallback(
     (
-      notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+      notes: Array<{ note: string; octave: number; startOffset: number; duration: number; velocity?: number }>,
       options: { velocity?: number; velocityVariancePercent?: number } = {}
     ) => {
-      const { velocity = 96, velocityVariancePercent = 10 } = options;
+      const { velocity = 96, velocityVariancePercent = 0 } = options;
 
       const output = selectedOutputRef.current;
       if (!output) return;
 
       stopAll();
-
-      const velocityByte = Math.max(1, Math.min(127, Math.round(velocity)));
-      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
 
       notes.forEach(noteEvent => {
         const normalized = normalizeNoteName(noteEvent.note);
@@ -240,9 +237,14 @@ export const useWebMidiChordSender = () => {
         const midiNote = baseMidiNumber(normalized, noteEvent.octave);
         if (midiNote < 0 || midiNote > 127) return;
 
-        // Apply velocity variance
+        // Use per-note velocity if provided, otherwise use base velocity
+        const baseVelocity = noteEvent.velocity !== undefined ? noteEvent.velocity : velocity;
+        const velocityByte = Math.max(1, Math.min(127, Math.round(baseVelocity)));
+        const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
+
+        // Apply velocity variance only if specified
         const maxVariance = velocityByte * velocityVarianceRange;
-        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
+        const velocityOffset = velocityVarianceRange > 0 ? Math.round((Math.random() * 2 - 1) * maxVariance) : 0;
         const noteVelocity = Math.max(1, Math.min(127, velocityByte + velocityOffset));
 
         const startDelayMs = noteEvent.startOffset * 1000;

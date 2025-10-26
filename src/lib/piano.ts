@@ -203,7 +203,7 @@ class StringEnsemble {
   }
 
   async playNoteSequence(
-    notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+    notes: Array<{ note: string; octave: number; startOffset: number; duration: number; velocity?: number }>,
     options: { velocity?: number; velocityVariancePercent?: number } = {}
   ): Promise<void> {
     if (!this.synth || !this.isInitialized) {
@@ -216,9 +216,7 @@ class StringEnsemble {
         await Tone.context.resume();
       }
 
-      const { velocity = 96, velocityVariancePercent = 10 } = options;
-      const baseVelocity = Math.max(1, Math.min(127, Math.round(velocity)));
-      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
+      const { velocity = 96, velocityVariancePercent = 0 } = options;
 
       const startTime = Tone.now();
       console.log(`Starting note sequence at ${startTime}, ${notes.length} notes`);
@@ -227,10 +225,15 @@ class StringEnsemble {
         const normalizedNote = this.normalizeNoteName(noteEvent.note as Note);
         const noteWithOctave = `${normalizedNote}${noteEvent.octave}` as NoteWithOctave;
 
-        // Apply velocity variance
-        const maxVariance = baseVelocity * velocityVarianceRange;
-        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
-        const noteVelocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+        // Use per-note velocity if provided, otherwise use base velocity
+        const baseVelocity = noteEvent.velocity !== undefined ? noteEvent.velocity : velocity;
+        const velocityByte = Math.max(1, Math.min(127, Math.round(baseVelocity)));
+        const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
+
+        // Apply velocity variance only if specified
+        const maxVariance = velocityByte * velocityVarianceRange;
+        const velocityOffset = velocityVarianceRange > 0 ? Math.round((Math.random() * 2 - 1) * maxVariance) : 0;
+        const noteVelocity = Math.max(1, Math.min(127, velocityByte + velocityOffset));
         const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
 
         const attackTime = startTime + noteEvent.startOffset;
@@ -274,7 +277,7 @@ export function usePianoSynthesizer() {
     playChord: (root: Note, intervals: number[], options?: PlayChordOptions) =>
       ensemble.playChord(root, intervals, options),
     playNoteSequence: (
-      notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+      notes: Array<{ note: string; octave: number; startOffset: number; duration: number; velocity?: number }>,
       options?: { velocity?: number; velocityVariancePercent?: number }
     ) => ensemble.playNoteSequence(notes, options),
     initialize: () => ensemble.initialize(),

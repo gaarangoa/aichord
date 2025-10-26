@@ -75,6 +75,7 @@ interface ParsedChord {
 }
 
 const DEFAULT_PROVIDER: ChatProvider = 'ollama';
+const DEFAULT_NOTE_VELOCITY = 96;
 
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -133,7 +134,43 @@ export default function Home() {
   const [octaveTranspose, setOctaveTranspose] = useState<number>(0); // Octave transposition (-2 to +2)
   const [transposeDisplay, setTransposeDisplay] = useState<boolean>(false); // If true, also transpose the display (default: transpose sound only)
   const [draggingChordIndex, setDraggingChordIndex] = useState<number | null>(null);
-  const [relativeVelocity, setRelativeVelocity] = useState<number | null>(null); // Relative velocity adjustment
+  const [relativeVelocity, setRelativeVelocity] = useState<number>(45); // Target relative velocity (default 45)
+
+  const clampVelocity = useCallback((value: number) => Math.max(1, Math.min(127, value)), []);
+
+  const calculateMedian = useCallback((values: number[]): number => {
+    if (values.length === 0) return DEFAULT_NOTE_VELOCITY;
+
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? Math.round((sorted[mid - 1] + sorted[mid]) / 2)
+      : sorted[mid];
+  }, []);
+
+  const calculateMedianVelocityFromEntries = useCallback((entries: ChordNotebookEntry[]): number => {
+    const velocities: number[] = [];
+    entries.forEach(entry => {
+      entry.noteSequence?.forEach(note => velocities.push(note.velocity));
+    });
+    return calculateMedian(velocities);
+  }, [calculateMedian]);
+
+  const adjustNotesToTargetVelocity = useCallback((notes: NoteEvent[], targetVelocity: number): NoteEvent[] => {
+    if (notes.length === 0) {
+      return [];
+    }
+
+    const clampedTarget = clampVelocity(targetVelocity);
+    const velocities = notes.map(note => note.velocity);
+    const median = calculateMedian(velocities);
+    const offset = clampedTarget - median;
+
+    return notes.map(note => ({
+      ...note,
+      velocity: clampVelocity(note.velocity + offset),
+    }));
+  }, [calculateMedian, clampVelocity]);
 
   // Convert musical duration to beats
   const durationToBeats = useCallback((duration: NoteDuration): number => {
@@ -156,43 +193,40 @@ export default function Home() {
   }, [bpm]);
 
   // Calculate median velocity across all notes
-  const currentMedianVelocity = useMemo(() => {
-    const allVelocities: number[] = [];
-    chordNotebook.forEach(entry => {
-      if (entry.noteSequence) {
-        entry.noteSequence.forEach(note => {
-          allVelocities.push(note.velocity);
-        });
-      }
-    });
-
-    if (allVelocities.length === 0) return 96; // Default
-
-    allVelocities.sort((a, b) => a - b);
-    const mid = Math.floor(allVelocities.length / 2);
-    return allVelocities.length % 2 === 0
-      ? Math.round((allVelocities[mid - 1] + allVelocities[mid]) / 2)
-      : allVelocities[mid];
-  }, [chordNotebook]);
+  const currentMedianVelocity = useMemo(
+    () => calculateMedianVelocityFromEntries(chordNotebook),
+    [chordNotebook, calculateMedianVelocityFromEntries]
+  );
 
   // Apply relative velocity adjustment to all notes
   const handleRelativeVelocityChange = useCallback((targetVelocity: number) => {
-    const offset = targetVelocity - currentMedianVelocity;
+    const clampedTarget = clampVelocity(targetVelocity);
 
-    setChordNotebook(prev => prev.map(entry => {
-      if (!entry.noteSequence) return entry;
+    setChordNotebook(prev => {
+      const previousMedian = calculateMedianVelocityFromEntries(prev);
+      const offset = clampedTarget - previousMedian;
 
-      return {
-        ...entry,
-        noteSequence: entry.noteSequence.map(note => ({
+      if (offset === 0) {
+        return prev;
+      }
+
+      return prev.map(entry => {
+        if (!entry.noteSequence) return entry;
+
+        const adjustedSequence = entry.noteSequence.map(note => ({
           ...note,
-          velocity: Math.max(1, Math.min(127, note.velocity + offset))
-        }))
-      };
-    }));
+          velocity: clampVelocity(note.velocity + offset),
+        }));
 
-    setRelativeVelocity(targetVelocity);
-  }, [currentMedianVelocity]);
+        return {
+          ...entry,
+          noteSequence: adjustedSequence,
+        };
+      });
+    });
+
+    setRelativeVelocity(clampedTarget);
+  }, [calculateMedianVelocityFromEntries, clampVelocity]);
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -410,17 +444,11 @@ export default function Home() {
         const noteName = midiToNote[noteMidi % 12];
 
         // Apply velocity variance (±10% by default)
-        const baseVelocity = 96;
+        const baseVelocity = DEFAULT_NOTE_VELOCITY;
         const variancePercent = 10;
         const maxVariance = baseVelocity * (variancePercent / 100);
         const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
-        let velocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
-
-        // Apply relative velocity adjustment if set
-        if (relativeVelocity !== null) {
-          const offset = relativeVelocity - currentMedianVelocity;
-          velocity = Math.max(1, Math.min(127, velocity + offset));
-        }
+        const velocity = clampVelocity(baseVelocity + velocityOffset);
 
         return {
           note: noteName,
@@ -431,7 +459,7 @@ export default function Home() {
         };
       });
 
-      return noteSequence;
+      return adjustNotesToTargetVelocity(noteSequence, relativeVelocity);
     };
 
     setChordNotebook(prev => [
@@ -444,7 +472,7 @@ export default function Home() {
         noteSequence: generateNoteSequence(chord),
       },
     ]);
-  }, [relativeVelocity, currentMedianVelocity]);
+  }, [relativeVelocity, adjustNotesToTargetVelocity, clampVelocity]);
 
   const sendConversationToAgent = useCallback(
     async (conversationMessages: ChatMessage[]) => {
@@ -939,15 +967,9 @@ export default function Home() {
   }, [chordNotebook, handleNotebookPlay, beatsToMs]);
 
   const handleAddParsedChord = useCallback((parsedChord: ParsedChord) => {
-    // Apply relative velocity adjustment to parsed notes if set
-    let adjustedNoteSequence = parsedChord.noteSequence;
-    if (relativeVelocity !== null && adjustedNoteSequence) {
-      const offset = relativeVelocity - currentMedianVelocity;
-      adjustedNoteSequence = adjustedNoteSequence.map(note => ({
-        ...note,
-        velocity: Math.max(1, Math.min(127, note.velocity + offset))
-      }));
-    }
+    const adjustedNoteSequence = parsedChord.noteSequence
+      ? adjustNotesToTargetVelocity(parsedChord.noteSequence, relativeVelocity)
+      : undefined;
 
     setChordNotebook(prev => [
       ...prev,
@@ -964,7 +986,7 @@ export default function Home() {
         noteSequence: adjustedNoteSequence,
       },
     ]);
-  }, [relativeVelocity, currentMedianVelocity]);
+  }, [adjustNotesToTargetVelocity, relativeVelocity]);
 
   const parseChordDefinition = useCallback((chordBlock: string): ParsedChord | null => {
     // Parse format:
@@ -1183,15 +1205,16 @@ export default function Home() {
                         type="number"
                         min="1"
                         max="127"
-                        value={relativeVelocity ?? currentMedianVelocity}
+                        value={relativeVelocity}
                         onChange={(e) => {
-                          const value = parseInt(e.target.value) || currentMedianVelocity;
+                          const value = parseInt(e.target.value, 10);
+                          if (Number.isNaN(value)) {
+                            return;
+                          }
                           handleRelativeVelocityChange(value);
                         }}
-                        onBlur={() => setRelativeVelocity(null)}
                         className="rounded border border-slate-300 px-2 py-1 text-xs w-16"
-                        placeholder={currentMedianVelocity.toString()}
-                        title="Set target median velocity (current median will be adjusted proportionally)"
+                        title="Set target velocity; existing notes shift together"
                       />
                       <span className="text-[10px] text-slate-500">
                         (current median: {currentMedianVelocity})

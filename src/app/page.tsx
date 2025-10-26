@@ -109,6 +109,9 @@ export default function Home() {
   const [editChordInput, setEditChordInput] = useState('');
   const [editTempoInput, setEditTempoInput] = useState('1.8');
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+  const [isPlayingSequence, setIsPlayingSequence] = useState(false);
+  const [currentlyPlayingChordId, setCurrentlyPlayingChordId] = useState<string | null>(null);
+  const sequenceAbortRef = useRef<boolean>(false);
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -624,6 +627,30 @@ export default function Home() {
     setDraggingIndex(null);
   }, []);
 
+  const handleStopSequence = useCallback(() => {
+    sequenceAbortRef.current = true;
+    setIsPlayingSequence(false);
+    setCurrentlyPlayingChordId(null);
+  }, []);
+
+  const handlePlaySequence = useCallback(async () => {
+    if (chordNotebook.length === 0) return;
+
+    sequenceAbortRef.current = false;
+    setIsPlayingSequence(true);
+
+    for (const entry of chordNotebook) {
+      if (sequenceAbortRef.current) break;
+
+      setCurrentlyPlayingChordId(entry.entryId);
+      await handleNotebookPlay(entry.entryId);
+      await new Promise(resolve => setTimeout(resolve, entry.tempoSeconds * 1000));
+    }
+
+    setIsPlayingSequence(false);
+    setCurrentlyPlayingChordId(null);
+  }, [chordNotebook, handleNotebookPlay]);
+
   const handleChordClick = useCallback(async (chordLabel: string) => {
     suppressNotebookAppendRef.current = true;
     try {
@@ -729,19 +756,24 @@ export default function Home() {
               <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
               <div className="flex items-center gap-3">
                 <p className="text-xs text-slate-500">Click chords to play, drag to reorder, edit tempo individually.</p>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    for (const entry of chordNotebook) {
-                      await handleNotebookPlay(entry.entryId);
-                      await new Promise(resolve => setTimeout(resolve, entry.tempoSeconds * 1000));
-                    }
-                  }}
-                  disabled={chordNotebook.length === 0}
-                  className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  ▶ Play Sequence
-                </button>
+                {isPlayingSequence ? (
+                  <button
+                    type="button"
+                    onClick={handleStopSequence}
+                    className="rounded-md bg-red-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-red-700"
+                  >
+                    ⏹ Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handlePlaySequence}
+                    disabled={chordNotebook.length === 0}
+                    className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    ▶ Play
+                  </button>
+                )}
               </div>
             </div>
 
@@ -758,8 +790,10 @@ export default function Home() {
                     onDragStart={() => handleDragStart(index)}
                     onDragOver={(e) => handleDragOver(e, index)}
                     onDragEnd={handleDragEnd}
-                    className={`flex flex-col gap-1 rounded-lg border p-2 transition ${
-                      draggingIndex === index
+                    className={`flex flex-col gap-1 rounded-lg border p-2 transition-all ${
+                      currentlyPlayingChordId === entry.entryId
+                        ? 'border-emerald-500 bg-emerald-100 shadow-lg ring-2 ring-emerald-400'
+                        : draggingIndex === index
                         ? 'border-blue-400 bg-blue-100 opacity-50'
                         : 'border-slate-200 bg-white'
                     } ${editingChordId !== entry.entryId ? 'cursor-move' : ''}`}

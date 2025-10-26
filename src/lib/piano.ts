@@ -172,7 +172,8 @@ class StringEnsemble {
       const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
       const jitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
       const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
-      const perNoteDuration = Math.max(0.1, Math.min(duration, intervalSeconds * 1.5));
+      // All notes get the full hold duration
+      const perNoteDuration = duration;
       let nextTime = Tone.now();
 
       chordNotes.forEach((noteWithOctave, index) => {

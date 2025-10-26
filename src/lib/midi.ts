@@ -188,11 +188,8 @@ export const useWebMidiChordSender = () => {
           accumulatedDelay += intervalGap * jitterFactor;
         }
         const startDelay = accumulatedDelay;
-        const isLastNote = index === midiNotes.length - 1;
-        const gapBeforeNext = Math.max(10, intervalGap - 20);
-        const perNoteHold = isLastNote
-          ? releaseDelay
-          : Math.min(releaseDelay, gapBeforeNext);
+        // All notes get the full hold duration
+        const perNoteHold = releaseDelay;
 
         // Apply velocity variance based on percentage of base velocity
         const maxVariance = velocityByte * velocityVarianceRange;

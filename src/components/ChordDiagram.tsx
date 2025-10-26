@@ -28,6 +28,10 @@ export interface ChordTriggerEvent {
 
 export interface ChordDiagramHandle {
   playChordById: (id: string) => Promise<void>;
+  sendMidiNoteSequence: (
+    notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+    options?: { velocity?: number; velocityVariancePercent?: number }
+  ) => void;
 }
 
 export interface ChordDiagramProps {
@@ -133,6 +137,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     requestAccess: requestMidiAccess,
     selectOutput: selectMidiOutput,
     sendChord: sendMidiChord,
+    sendNoteSequence: sendMidiNoteSequence,
     stopAll: stopMidiOutput,
   } = useWebMidiChordSender();
   const [midiError, setMidiError] = useState<string | null>(null);
@@ -436,7 +441,8 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
 
   useImperativeHandle(ref, () => ({
     playChordById,
-  }), [playChordById]);
+    sendMidiNoteSequence,
+  }), [playChordById, sendMidiNoteSequence]);
 
 return (
   <div className="flex h-full w-full flex-col bg-white text-gray-900">

@@ -218,6 +218,58 @@ export const useWebMidiChordSender = () => {
     [stopAll]
   );
 
+  const sendNoteSequence = useCallback(
+    (
+      notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+      options: { velocity?: number; velocityVariancePercent?: number } = {}
+    ) => {
+      const { velocity = 96, velocityVariancePercent = 10 } = options;
+
+      const output = selectedOutputRef.current;
+      if (!output) return;
+
+      stopAll();
+
+      const velocityByte = Math.max(1, Math.min(127, Math.round(velocity)));
+      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
+
+      notes.forEach(noteEvent => {
+        const normalized = normalizeNoteName(noteEvent.note);
+        if (!normalized) return;
+
+        const midiNote = baseMidiNumber(normalized, noteEvent.octave);
+        if (midiNote < 0 || midiNote > 127) return;
+
+        // Apply velocity variance
+        const maxVariance = velocityByte * velocityVarianceRange;
+        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
+        const noteVelocity = Math.max(1, Math.min(127, velocityByte + velocityOffset));
+
+        const startDelayMs = noteEvent.startOffset * 1000;
+        const durationMs = noteEvent.duration * 1000;
+
+        const onTimerId = window.setTimeout(() => {
+          const currentOutput = selectedOutputRef.current;
+          if (!currentOutput) return;
+
+          currentOutput.send([0x90, midiNote, noteVelocity]);
+          activeNotesRef.current.push(midiNote);
+        }, startDelayMs);
+        timersRef.current.push(onTimerId);
+
+        const offTimerId = window.setTimeout(() => {
+          const currentOutput = selectedOutputRef.current;
+          if (!currentOutput) return;
+
+          currentOutput.send([0x80, midiNote, 0]);
+          activeNotesRef.current = activeNotesRef.current.filter(n => n !== midiNote);
+        }, startDelayMs + durationMs);
+        timersRef.current.push(offTimerId);
+      });
+    },
+    [stopAll]
+  );
+
   return {
     isSupported,
     hasAccess,
@@ -226,6 +278,7 @@ export const useWebMidiChordSender = () => {
     requestAccess,
     selectOutput,
     sendChord,
+    sendNoteSequence,
     stopAll,
   };
 };

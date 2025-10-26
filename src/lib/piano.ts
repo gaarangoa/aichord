@@ -202,6 +202,57 @@ class StringEnsemble {
     }
   }
 
+  async playNoteSequence(
+    notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+    options: { velocity?: number; velocityVariancePercent?: number } = {}
+  ): Promise<void> {
+    if (!this.synth || !this.isInitialized) {
+      console.warn('Synthesizer not ready. Please ensure audio is enabled.');
+      return;
+    }
+
+    try {
+      if (Tone.context.state !== 'running') {
+        await Tone.context.resume();
+      }
+
+      const { velocity = 96, velocityVariancePercent = 10 } = options;
+      const baseVelocity = Math.max(1, Math.min(127, Math.round(velocity)));
+      const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
+
+      const startTime = Tone.now();
+      console.log(`Starting note sequence at ${startTime}, ${notes.length} notes`);
+
+      notes.forEach((noteEvent, idx) => {
+        const normalizedNote = this.normalizeNoteName(noteEvent.note as Note);
+        const noteWithOctave = `${normalizedNote}${noteEvent.octave}` as NoteWithOctave;
+
+        // Apply velocity variance
+        const maxVariance = baseVelocity * velocityVarianceRange;
+        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
+        const noteVelocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+        const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
+
+        const attackTime = startTime + noteEvent.startOffset;
+        const attackJitter = Math.random() * 0.01; // up to 10ms for subtle variation
+
+        console.log(`  [${idx}] ${noteWithOctave} @ ${noteEvent.startOffset}s (abs: ${attackTime.toFixed(3)}), duration: ${noteEvent.duration}s`);
+
+        this.synth?.triggerAttackRelease(
+          noteWithOctave,
+          noteEvent.duration,
+          attackTime + attackJitter,
+          velocityScalar
+        );
+      });
+
+      console.log('Note sequence scheduled successfully');
+    } catch (error) {
+      console.error('Failed to play note sequence:', error);
+      throw error;
+    }
+  }
+
   stopAllNotes(): void {
     if (this.synth) {
       this.synth.releaseAll();
@@ -222,6 +273,10 @@ export function usePianoSynthesizer() {
   return useMemo(() => ({
     playChord: (root: Note, intervals: number[], options?: PlayChordOptions) =>
       ensemble.playChord(root, intervals, options),
+    playNoteSequence: (
+      notes: Array<{ note: string; octave: number; startOffset: number; duration: number }>,
+      options?: { velocity?: number; velocityVariancePercent?: number }
+    ) => ensemble.playNoteSequence(notes, options),
     initialize: () => ensemble.initialize(),
     startContext: () => ensemble.startContext(),
     stopAllNotes: () => ensemble.stopAllNotes(),

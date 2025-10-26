@@ -46,18 +46,25 @@ interface ChatMessage {
   variant?: ChatMessageVariant;
 }
 
+interface NoteEvent {
+  note: string;        // Note name (C, D#, E, etc.)
+  octave: number;      // Octave number (2-6)
+  startOffset: number; // Seconds from chord start
+  duration: number;    // Seconds to sustain
+}
+
 interface ChordNotebookEntry {
   entryId: string;
   chord: ChordTriggerEvent;
   addedAt: number;
-  tempoSeconds: number; // Individual tempo for this chord
-  notes?: string[]; // Optional: actual notes for the chord
+  tempoSeconds: number;    // Total duration before next chord
+  noteSequence?: NoteEvent[]; // Detailed note sequence
 }
 
 interface ParsedChord {
   name: string;
   tempo: number;
-  notes: string[];
+  noteSequence: NoteEvent[];
 }
 
 const DEFAULT_PROVIDER: ChatProvider = 'ollama';
@@ -111,6 +118,7 @@ export default function Home() {
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [isPlayingSequence, setIsPlayingSequence] = useState(false);
   const [currentlyPlayingChordId, setCurrentlyPlayingChordId] = useState<string | null>(null);
+  const [expandedChordId, setExpandedChordId] = useState<string | null>(null);
   const sequenceAbortRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -548,11 +556,26 @@ export default function Home() {
   const handleNotebookPlay = useCallback(async (entryId: string) => {
     const target = chordNotebook.find(entry => entry.entryId === entryId);
     if (!target) {
+      console.warn('Chord entry not found:', entryId);
       return;
     }
+
+    console.log('Playing chord:', target.chord.label, 'Has note sequence:', !!target.noteSequence, 'Note count:', target.noteSequence?.length || 0);
+
     suppressNotebookAppendRef.current = true;
     try {
-      await diagramRef.current?.playChordById(target.chord.id);
+      // If this entry has a note sequence, send it to MIDI only
+      if (target.noteSequence && target.noteSequence.length > 0) {
+        console.log('Sending note sequence to MIDI via ChordDiagram');
+        diagramRef.current?.sendMidiNoteSequence(target.noteSequence, {
+          velocity: 96,
+          velocityVariancePercent: 10,
+        });
+      } else {
+        // Otherwise use the chord diagram's built-in playback
+        console.log('Using chord diagram playback for:', target.chord.id);
+        await diagramRef.current?.playChordById(target.chord.id);
+      }
     } finally {
       suppressNotebookAppendRef.current = false;
     }
@@ -672,32 +695,70 @@ export default function Home() {
           id: parsedChord.name,
           root: parsedChord.name.charAt(0),
           label: parsedChord.name,
-          type: 'major' as ChordQuality, // Default, can be improved
+          type: 'major' as ChordQuality,
         },
         addedAt: Date.now(),
         tempoSeconds: parsedChord.tempo,
-        notes: parsedChord.notes,
+        noteSequence: parsedChord.noteSequence,
       },
     ]);
   }, []);
 
-  const parseChordDefinition = useCallback((chordStr: string): ParsedChord | null => {
-    // Parse format: [CHORD: name | tempo | notes]
-    const match = chordStr.match(/\[CHORD:\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^\]]+)\]/);
-    if (!match) return null;
+  const parseChordDefinition = useCallback((chordBlock: string): ParsedChord | null => {
+    // Parse format:
+    // [CHORD: name | tempo]
+    // Note, Octave, StartOffset, Duration
+    // ...
+    // [/CHORD]
 
-    const name = match[1].trim();
-    const tempo = parseFloat(match[2].trim());
-    const notes = match[3].trim().split(/\s+/);
+    const headerMatch = chordBlock.match(/\[CHORD:\s*([^|]+)\s*\|\s*([^\]]+)\]/);
+    if (!headerMatch) {
+      console.warn('Failed to parse chord header from:', chordBlock.substring(0, 100));
+      return null;
+    }
 
-    if (!name || isNaN(tempo) || notes.length === 0) return null;
+    const name = headerMatch[1].trim();
+    const tempo = parseFloat(headerMatch[2].trim());
 
-    return { name, tempo, notes };
+    if (!name || isNaN(tempo)) {
+      console.warn('Invalid chord name or tempo:', { name, tempo });
+      return null;
+    }
+
+    // Extract note lines between header and [/CHORD]
+    const noteLines = chordBlock
+      .split('\n')
+      .slice(1) // Skip header line
+      .filter(line => line.trim() && !line.includes('[/CHORD]'));
+
+    const noteSequence: NoteEvent[] = [];
+
+    for (const line of noteLines) {
+      const parts = line.split(',').map(p => p.trim());
+      if (parts.length !== 4) continue;
+
+      const note = parts[0];
+      const octave = parseInt(parts[1]);
+      const startOffset = parseFloat(parts[2]);
+      const duration = parseFloat(parts[3]);
+
+      if (!note || isNaN(octave) || isNaN(startOffset) || isNaN(duration)) continue;
+
+      noteSequence.push({ note, octave, startOffset, duration });
+    }
+
+    if (noteSequence.length === 0) {
+      console.warn('No valid notes parsed from chord block');
+      return null;
+    }
+
+    console.log(`Parsed chord: ${name} (${tempo}s) with ${noteSequence.length} notes:`, noteSequence);
+    return { name, tempo, noteSequence };
   }, []);
 
   const renderMessageContent = useCallback((content: string) => {
-    // Regex to match [CHORD: name | tempo | notes]
-    const chordPattern = /\[CHORD:\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^\]]+)\]/g;
+    // Regex to match [CHORD: ... ] ... [/CHORD] blocks
+    const chordPattern = /\[CHORD:[^\]]+\][\s\S]*?\[\/CHORD\]/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
@@ -712,18 +773,22 @@ export default function Home() {
       const parsedChord = parseChordDefinition(match[0]);
 
       if (parsedChord) {
+        const noteCount = parsedChord.noteSequence.length;
         // Add clickable chord button
         parts.push(
           <button
             key={`chord-${keyCounter++}`}
             type="button"
             onClick={() => handleAddParsedChord(parsedChord)}
-            className="mx-1 inline-flex items-center gap-1 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 transition hover:border-blue-400 hover:bg-blue-100 hover:shadow-sm"
+            className="mx-1 inline-flex flex-col items-start gap-0.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 transition hover:border-blue-400 hover:bg-blue-100 hover:shadow-sm"
             title={`Click to add ${parsedChord.name} to playground`}
           >
-            <span>{parsedChord.name}</span>
-            <span className="text-[10px] text-blue-500">({parsedChord.tempo}s)</span>
-            <span className="text-xs">+</span>
+            <div className="flex items-center gap-1">
+              <span>{parsedChord.name}</span>
+              <span className="text-[10px] text-blue-500">({parsedChord.tempo}s)</span>
+              <span className="text-xs">+</span>
+            </div>
+            <span className="text-[9px] text-blue-400">{noteCount} notes</span>
           </button>
         );
       }
@@ -866,6 +931,16 @@ export default function Home() {
                           >
                             {entry.chord.label}
                           </button>
+                          {entry.noteSequence && entry.noteSequence.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedChordId(expandedChordId === entry.entryId ? null : entry.entryId)}
+                              className="rounded-full border border-transparent px-2 text-xs font-semibold text-purple-500 transition hover:border-purple-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-purple-300"
+                              aria-label={`${expandedChordId === entry.entryId ? 'Hide' : 'Show'} notes`}
+                            >
+                              {expandedChordId === entry.entryId ? '▼' : '♪'}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleStartEditChord(entry)}
@@ -885,7 +960,22 @@ export default function Home() {
                         </div>
                         <div className="text-center text-[10px] text-slate-500">
                           {entry.tempoSeconds.toFixed(1)}s
+                          {entry.noteSequence && ` • ${entry.noteSequence.length} notes`}
                         </div>
+                        {expandedChordId === entry.entryId && entry.noteSequence && (
+                          <div className="mt-2 w-full border-t border-slate-200 pt-2">
+                            <div className="text-[9px] font-semibold text-slate-600 mb-1">Notes:</div>
+                            <div className="flex flex-col gap-0.5">
+                              {entry.noteSequence.map((note, noteIdx) => (
+                                <div key={noteIdx} className="flex items-center gap-1 text-[9px] text-slate-600">
+                                  <span className="font-mono font-semibold text-purple-600">{note.note}{note.octave}</span>
+                                  <span className="text-slate-400">@{note.startOffset.toFixed(2)}s</span>
+                                  <span className="text-slate-400">({note.duration.toFixed(2)}s)</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>

@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@/components/ChordDiagram';
 
 type ChatProvider = 'ollama' | 'openai';
+type ChordQuality = 'major' | 'minor' | 'dominant7' | 'major7' | 'minor7';
 
 type ChatMessageVariant = 'default' | 'chords';
 
@@ -46,24 +47,28 @@ interface ChatMessage {
   variant?: ChatMessageVariant;
 }
 
+type NoteDuration = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth' |
+                     'dotted-half' | 'dotted-quarter' | 'dotted-eighth';
+
 interface NoteEvent {
   note: string;        // Note name (C, D#, E, etc.)
   octave: number;      // Octave number (2-6)
-  startOffset: number; // Seconds from chord start
-  duration: number;    // Seconds to sustain
+  beat: number;        // Beat number when note starts (0, 1, 2, 3...)
+  duration: NoteDuration; // Musical duration
+  velocity: number;    // MIDI velocity (1-127, default 96)
 }
 
 interface ChordNotebookEntry {
   entryId: string;
   chord: ChordTriggerEvent;
   addedAt: number;
-  tempoSeconds: number;    // Total duration before next chord
+  measures: number;        // Number of measures/bars this chord spans
   noteSequence?: NoteEvent[]; // Detailed note sequence
 }
 
 interface ParsedChord {
   name: string;
-  tempo: number;
+  measures: number;
   noteSequence: NoteEvent[];
 }
 
@@ -114,12 +119,42 @@ export default function Home() {
   const [chordNotebook, setChordNotebook] = useState<ChordNotebookEntry[]>([]);
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
-  const [editTempoInput, setEditTempoInput] = useState('1.8');
+  const [editMeasuresInput, setEditMeasuresInput] = useState('1');
+  const [editingNoteIndex, setEditingNoteIndex] = useState<number | null>(null);
+  const [editNoteData, setEditNoteData] = useState<NoteEvent | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [isPlayingSequence, setIsPlayingSequence] = useState(false);
   const [currentlyPlayingChordId, setCurrentlyPlayingChordId] = useState<string | null>(null);
   const [expandedChordId, setExpandedChordId] = useState<string | null>(null);
+  const [bpm, setBpm] = useState<number>(120); // Beats per minute
+  const [currentPlayingNoteBeat, setCurrentPlayingNoteBeat] = useState<number | null>(null);
+  const [currentPlaybackBeat, setCurrentPlaybackBeat] = useState<number | null>(null); // Continuous playback position
+  const musicSheetRef = useRef<HTMLDivElement>(null);
   const sequenceAbortRef = useRef<boolean>(false);
+  const playbackStartTimeRef = useRef<number | null>(null);
+  const playbackAnimationRef = useRef<number | null>(null);
+  const [octaveTranspose, setOctaveTranspose] = useState<number>(0); // Octave transposition (-2 to +2)
+  const [transposeDisplay, setTransposeDisplay] = useState<boolean>(false); // If true, also transpose the display (default: transpose sound only)
+
+  // Convert musical duration to beats
+  const durationToBeats = useCallback((duration: NoteDuration): number => {
+    const beatMap: Record<NoteDuration, number> = {
+      'whole': 4,
+      'half': 2,
+      'quarter': 1,
+      'eighth': 0.5,
+      'sixteenth': 0.25,
+      'dotted-half': 3,
+      'dotted-quarter': 1.5,
+      'dotted-eighth': 0.75,
+    };
+    return beatMap[duration] || 1;
+  }, []);
+
+  // Convert beats to milliseconds based on BPM
+  const beatsToMs = useCallback((beats: number): number => {
+    return (beats / bpm) * 60000;
+  }, [bpm]);
 
   useEffect(() => {
     const loadProviders = async () => {
@@ -267,13 +302,83 @@ export default function Home() {
     isSending || !chatInput.trim() || !selectedModel || !agentPrompt || !activeAgent;
 
   const handleAddChordToNotebook = useCallback((chord: ChordTriggerEvent) => {
+    // Generate note sequence from chord intervals
+    const generateNoteSequence = (chordEvent: ChordTriggerEvent): NoteEvent[] | undefined => {
+      // Map chord types to intervals (semitones from root)
+      const intervalMap: Record<string, number[]> = {
+        'major': [0, 4, 7],
+        'minor': [0, 3, 7],
+        'dominant7': [0, 4, 7, 10],
+        'major7': [0, 4, 7, 11],
+        'minor7': [0, 3, 7, 10],
+        'halfDiminished7': [0, 3, 6, 10],
+        'diminished7': [0, 3, 6, 9],
+        'dominant9': [0, 4, 7, 10, 14],
+        'major9': [0, 4, 7, 11, 14],
+        'minor9': [0, 3, 7, 10, 14],
+        'dominant11': [0, 4, 7, 10, 14, 17],
+        'major11': [0, 4, 7, 11, 14, 17],
+        'minor11': [0, 3, 7, 10, 14, 17],
+        'dominant13': [0, 4, 7, 10, 14, 17, 21],
+        'major13': [0, 4, 7, 11, 14, 17, 21],
+        'minor13': [0, 3, 7, 10, 14, 17, 21],
+        'augmented': [0, 4, 8],
+        'diminished': [0, 3, 6],
+        'sus2': [0, 2, 7],
+        'sus4': [0, 5, 7],
+        'add9': [0, 4, 7, 14],
+        'add11': [0, 4, 7, 17],
+      };
+
+      const intervals = intervalMap[chordEvent.type];
+      if (!intervals) return undefined;
+
+      // Map root note to MIDI number
+      const noteToMidi: Record<string, number> = {
+        'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
+        'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8,
+        'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11
+      };
+
+      const midiToNote = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+      const rootMidi = noteToMidi[chordEvent.root] ?? 0;
+      const baseOctave = 4; // Default to octave 4 (treble clef range)
+
+      // Generate notes as a block chord (all notes at same time)
+      // In 4/4 time, a whole note lasts 4 beats (one complete measure)
+      const noteSequence: NoteEvent[] = intervals.map(interval => {
+        const noteMidi = rootMidi + interval;
+        const noteOctave = baseOctave + Math.floor(noteMidi / 12);
+        const noteName = midiToNote[noteMidi % 12];
+
+        // Apply velocity variance (±10% by default)
+        const baseVelocity = 96;
+        const variancePercent = 10;
+        const maxVariance = baseVelocity * (variancePercent / 100);
+        const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
+        const velocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
+
+        return {
+          note: noteName,
+          octave: noteOctave,
+          beat: 0,              // All notes start at beat 0 (downbeat)
+          duration: 'whole',    // Whole note = 4 beats in 4/4 time
+          velocity: velocity,   // MIDI velocity with variance
+        };
+      });
+
+      return noteSequence;
+    };
+
     setChordNotebook(prev => [
       ...prev,
       {
         entryId: createId(),
         chord,
         addedAt: Date.now(),
-        tempoSeconds: 1.8, // Default tempo
+        measures: 1, // Default 1 measure (4 beats in 4/4 time)
+        noteSequence: generateNoteSequence(chord),
       },
     ]);
   }, []);
@@ -287,7 +392,7 @@ export default function Home() {
 
       const trimmedInstructions = chatInstructions.trim();
       const progressionDetails = chordNotebook.map(entry =>
-        `${entry.chord.label} (${entry.tempoSeconds}s)`
+        `${entry.chord.label} (${entry.measures} bar${entry.measures !== 1 ? 's' : ''})`
       );
       const progressionMessage = progressionDetails.length
         ? `Chord progression: ${progressionDetails.join(' → ')}`
@@ -566,10 +671,22 @@ export default function Home() {
     try {
       // If this entry has a note sequence, send it to MIDI only
       if (target.noteSequence && target.noteSequence.length > 0) {
-        console.log('Sending note sequence to MIDI via ChordDiagram');
-        diagramRef.current?.sendMidiNoteSequence(target.noteSequence, {
-          velocity: 96,
-          velocityVariancePercent: 10,
+        console.log('Sending note sequence to MIDI via ChordDiagram at BPM:', bpm, 'Octave transpose:', octaveTranspose, 'Transpose display:', transposeDisplay);
+
+        // Convert musical notation to actual timing in seconds
+        // Always apply octave transposition to sound
+        const timedNotes = target.noteSequence.map(note => ({
+          note: note.note,
+          octave: note.octave + octaveTranspose,
+          startOffset: beatsToMs(note.beat) / 1000, // Convert beats to seconds
+          duration: beatsToMs(durationToBeats(note.duration)) / 1000, // Convert duration to seconds
+          velocity: note.velocity, // Use per-note velocity
+        }));
+
+        // Send all notes together as a sequence
+        diagramRef.current?.sendMidiNoteSequence(timedNotes, {
+          velocity: 96, // Base velocity (individual note velocities will be used)
+          velocityVariancePercent: 0, // No additional variance, use each note's velocity
         });
       } else {
         // Otherwise use the chord diagram's built-in playback
@@ -579,16 +696,24 @@ export default function Home() {
     } finally {
       suppressNotebookAppendRef.current = false;
     }
-  }, [chordNotebook]);
+  }, [chordNotebook, bpm, beatsToMs, durationToBeats, octaveTranspose]);
 
   const handleNotebookRemove = useCallback((entryId: string) => {
     setChordNotebook(prev => prev.filter(entry => entry.entryId !== entryId));
   }, []);
 
+  const handleClearAll = useCallback(() => {
+    setChordNotebook([]);
+    setEditingChordId(null);
+    setExpandedChordId(null);
+    setCurrentlyPlayingChordId(null);
+    setCurrentPlayingNoteBeat(null);
+  }, []);
+
   const handleStartEditChord = useCallback((entry: ChordNotebookEntry) => {
     setEditingChordId(entry.entryId);
     setEditChordInput(entry.chord.label);
-    setEditTempoInput(entry.tempoSeconds.toString());
+    setEditMeasuresInput(entry.measures.toString());
   }, []);
 
   const handleSaveEditChord = useCallback((entryId: string) => {
@@ -598,12 +723,12 @@ export default function Home() {
       return;
     }
 
-    const newTempo = parseFloat(editTempoInput);
-    const validTempo = !isNaN(newTempo) && newTempo > 0 ? newTempo : 1.8;
+    const newMeasures = parseFloat(editMeasuresInput);
+    const validMeasures = !isNaN(newMeasures) && newMeasures > 0 ? newMeasures : 1;
 
     setChordNotebook(prev => prev.map(entry => {
       if (entry.entryId === entryId) {
-        // Create a new chord object with updated label, id, and tempo
+        // Create a new chord object with updated label, id, and measures
         return {
           ...entry,
           chord: {
@@ -611,7 +736,7 @@ export default function Home() {
             id: newLabel,
             label: newLabel,
           },
-          tempoSeconds: validTempo,
+          measures: validMeasures,
         };
       }
       return entry;
@@ -619,13 +744,13 @@ export default function Home() {
 
     setEditingChordId(null);
     setEditChordInput('');
-    setEditTempoInput('1.8');
-  }, [editChordInput, editTempoInput]);
+    setEditMeasuresInput('1');
+  }, [editChordInput, editMeasuresInput]);
 
   const handleCancelEditChord = useCallback(() => {
     setEditingChordId(null);
     setEditChordInput('');
-    setEditTempoInput('1.8');
+    setEditMeasuresInput('1');
   }, []);
 
   const handleDragStart = useCallback((index: number) => {
@@ -654,6 +779,13 @@ export default function Home() {
     sequenceAbortRef.current = true;
     setIsPlayingSequence(false);
     setCurrentlyPlayingChordId(null);
+    setCurrentPlayingNoteBeat(null);
+    setCurrentPlaybackBeat(null);
+    playbackStartTimeRef.current = null;
+    if (playbackAnimationRef.current !== null) {
+      cancelAnimationFrame(playbackAnimationRef.current);
+      playbackAnimationRef.current = null;
+    }
   }, []);
 
   const handlePlaySequence = useCallback(async () => {
@@ -662,29 +794,74 @@ export default function Home() {
     sequenceAbortRef.current = false;
     setIsPlayingSequence(true);
 
+    // Calculate total beats for the entire progression
+    const totalBeats = chordNotebook.reduce((sum, entry) => sum + entry.measures * 4, 0);
+    const totalDurationMs = beatsToMs(totalBeats);
+
+    // Start playback animation
+    const startTime = performance.now();
+    playbackStartTimeRef.current = startTime;
+
+    // Smooth animation loop for the playback line
+    const animate = () => {
+      if (sequenceAbortRef.current || playbackStartTimeRef.current === null) {
+        setCurrentPlaybackBeat(null);
+        setCurrentPlayingNoteBeat(null);
+        return;
+      }
+
+      const elapsed = performance.now() - playbackStartTimeRef.current;
+      const currentBeat = (elapsed / beatsToMs(1));
+
+      if (currentBeat >= totalBeats) {
+        // Playback complete
+        setCurrentPlaybackBeat(null);
+        setCurrentPlayingNoteBeat(null);
+        return;
+      }
+
+      setCurrentPlaybackBeat(currentBeat);
+
+      // Auto-scroll to the playback position
+      const musicSheet = musicSheetRef.current;
+      if (musicSheet) {
+        const beatSpacing = 30; // Must match the beatSpacing in the render
+        const scrollTarget = currentBeat * beatSpacing;
+        musicSheet.scrollLeft = Math.max(0, scrollTarget - musicSheet.clientWidth / 2);
+      }
+
+      playbackAnimationRef.current = requestAnimationFrame(animate);
+    };
+
+    playbackAnimationRef.current = requestAnimationFrame(animate);
+
+    let accumulatedBeats = 0;
+
     for (const entry of chordNotebook) {
       if (sequenceAbortRef.current) break;
 
       setCurrentlyPlayingChordId(entry.entryId);
+
       await handleNotebookPlay(entry.entryId);
-      await new Promise(resolve => setTimeout(resolve, entry.tempoSeconds * 1000));
+
+      // Wait for the measure duration (4 beats per measure in 4/4 time)
+      const measureBeats = entry.measures * 4;
+      const waitTime = beatsToMs(measureBeats);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+
+      accumulatedBeats += measureBeats;
     }
 
     setIsPlayingSequence(false);
     setCurrentlyPlayingChordId(null);
-  }, [chordNotebook, handleNotebookPlay]);
-
-  const handleChordClick = useCallback(async (chordLabel: string) => {
-    suppressNotebookAppendRef.current = true;
-    try {
-      const chordEntry = chordNotebook.find(entry => entry.chord.label === chordLabel);
-      if (chordEntry) {
-        await diagramRef.current?.playChordById(chordEntry.chord.id);
-      }
-    } finally {
-      suppressNotebookAppendRef.current = false;
+    setCurrentPlaybackBeat(null);
+    setCurrentPlayingNoteBeat(null);
+    playbackStartTimeRef.current = null;
+    if (playbackAnimationRef.current !== null) {
+      cancelAnimationFrame(playbackAnimationRef.current);
+      playbackAnimationRef.current = null;
     }
-  }, [chordNotebook]);
+  }, [chordNotebook, handleNotebookPlay, beatsToMs]);
 
   const handleAddParsedChord = useCallback((parsedChord: ParsedChord) => {
     setChordNotebook(prev => [
@@ -698,7 +875,7 @@ export default function Home() {
           type: 'major' as ChordQuality,
         },
         addedAt: Date.now(),
-        tempoSeconds: parsedChord.tempo,
+        measures: parsedChord.measures,
         noteSequence: parsedChord.noteSequence,
       },
     ]);
@@ -706,8 +883,8 @@ export default function Home() {
 
   const parseChordDefinition = useCallback((chordBlock: string): ParsedChord | null => {
     // Parse format:
-    // [CHORD: name | tempo]
-    // Note, Octave, StartOffset, Duration
+    // [CHORD: name | measures]
+    // Note, Octave, Beat, Duration, Velocity (velocity is optional)
     // ...
     // [/CHORD]
 
@@ -718,10 +895,10 @@ export default function Home() {
     }
 
     const name = headerMatch[1].trim();
-    const tempo = parseFloat(headerMatch[2].trim());
+    const measures = parseFloat(headerMatch[2].trim());
 
-    if (!name || isNaN(tempo)) {
-      console.warn('Invalid chord name or tempo:', { name, tempo });
+    if (!name || isNaN(measures)) {
+      console.warn('Invalid chord name or measures:', { name, measures });
       return null;
     }
 
@@ -733,18 +910,25 @@ export default function Home() {
 
     const noteSequence: NoteEvent[] = [];
 
+    const validDurations: NoteDuration[] = [
+      'whole', 'half', 'quarter', 'eighth', 'sixteenth',
+      'dotted-half', 'dotted-quarter', 'dotted-eighth'
+    ];
+
     for (const line of noteLines) {
       const parts = line.split(',').map(p => p.trim());
-      if (parts.length !== 4) continue;
+      if (parts.length !== 4 && parts.length !== 5) continue; // 4 or 5 parts (velocity optional)
 
       const note = parts[0];
       const octave = parseInt(parts[1]);
-      const startOffset = parseFloat(parts[2]);
-      const duration = parseFloat(parts[3]);
+      const beat = parseFloat(parts[2]);
+      const duration = parts[3] as NoteDuration;
+      const velocity = parts.length === 5 ? parseInt(parts[4]) : 96; // Default velocity if not provided
 
-      if (!note || isNaN(octave) || isNaN(startOffset) || isNaN(duration)) continue;
+      if (!note || isNaN(octave) || isNaN(beat) || !validDurations.includes(duration)) continue;
+      if (isNaN(velocity) || velocity < 1 || velocity > 127) continue;
 
-      noteSequence.push({ note, octave, startOffset, duration });
+      noteSequence.push({ note, octave, beat, duration, velocity });
     }
 
     if (noteSequence.length === 0) {
@@ -752,8 +936,8 @@ export default function Home() {
       return null;
     }
 
-    console.log(`Parsed chord: ${name} (${tempo}s) with ${noteSequence.length} notes:`, noteSequence);
-    return { name, tempo, noteSequence };
+    console.log(`Parsed chord: ${name} (${measures} measures) with ${noteSequence.length} notes:`, noteSequence);
+    return { name, measures, noteSequence };
   }, []);
 
   const renderMessageContent = useCallback((content: string) => {
@@ -785,7 +969,7 @@ export default function Home() {
           >
             <div className="flex items-center gap-1">
               <span>{parsedChord.name}</span>
-              <span className="text-[10px] text-blue-500">({parsedChord.tempo}s)</span>
+              <span className="text-[10px] text-blue-500">({parsedChord.measures} bar{parsedChord.measures !== 1 ? 's' : ''})</span>
               <span className="text-xs">+</span>
             </div>
             <span className="text-[9px] text-blue-400">{noteCount} notes</span>
@@ -820,7 +1004,30 @@ export default function Home() {
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold text-slate-900">Chord Playground</h2>
               <div className="flex items-center gap-3">
-                <p className="text-xs text-slate-500">Click chords to play, drag to reorder, edit tempo individually.</p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-slate-600">
+                    BPM:
+                  </label>
+                  <input
+                    type="number"
+                    min="40"
+                    max="240"
+                    step="1"
+                    value={bpm}
+                    onChange={(e) => setBpm(parseInt(e.target.value) || 120)}
+                    className="w-16 rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </div>
+                <p className="text-xs text-slate-500">Click chords to play, drag to reorder.</p>
+                {chordNotebook.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAll}
+                    className="rounded-md bg-slate-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-700"
+                  >
+                    Clear All
+                  </button>
+                )}
                 {isPlayingSequence ? (
                   <button
                     type="button"
@@ -844,142 +1051,613 @@ export default function Home() {
 
             {chordNotebook.length === 0 ? (
               <p className="mt-4 text-sm text-slate-500">
-                Play a chord to drop it here. Each entry will appear as a simple label.
+                Play a chord from the diagram or add chords from the chat. They will appear in the music sheet below.
               </p>
-            ) : (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {chordNotebook.map((entry, index) => (
-                  <div
-                    key={entry.entryId}
-                    draggable={editingChordId !== entry.entryId}
-                    onDragStart={() => handleDragStart(index)}
-                    onDragOver={(e) => handleDragOver(e, index)}
-                    onDragEnd={handleDragEnd}
-                    className={`flex flex-col gap-1 rounded-lg border p-2 transition-all ${
-                      currentlyPlayingChordId === entry.entryId
-                        ? 'border-emerald-500 bg-emerald-100 shadow-lg ring-2 ring-emerald-400'
-                        : draggingIndex === index
-                        ? 'border-blue-400 bg-blue-100 opacity-50'
-                        : 'border-slate-200 bg-white'
-                    } ${editingChordId !== entry.entryId ? 'cursor-move' : ''}`}
-                  >
-                    {editingChordId === entry.entryId ? (
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="text"
-                            value={editChordInput}
-                            onChange={(e) => setEditChordInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                handleSaveEditChord(entry.entryId);
-                              } else if (e.key === 'Escape') {
-                                handleCancelEditChord();
-                              }
-                            }}
-                            placeholder="e.g. Cmaj7"
-                            className="w-20 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-sm font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                            autoFocus
-                          />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            value={editTempoInput}
-                            onChange={(e) => setEditTempoInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                handleSaveEditChord(entry.entryId);
-                              } else if (e.key === 'Escape') {
-                                handleCancelEditChord();
-                              }
-                            }}
-                            placeholder="1.8"
-                            min="0.1"
-                            max="10"
-                            step="0.1"
-                            className="w-16 rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          />
-                          <span className="text-[10px] text-slate-500">sec</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleSaveEditChord(entry.entryId)}
-                            className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700 transition hover:bg-green-100"
-                            aria-label="Save edit"
-                          >
-                            ✓
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleCancelEditChord}
-                            className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700 transition hover:bg-red-100"
-                            aria-label="Cancel edit"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleNotebookPlay(entry.entryId)}
-                            className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                          >
-                            {entry.chord.label}
-                          </button>
-                          {entry.noteSequence && entry.noteSequence.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setExpandedChordId(expandedChordId === entry.entryId ? null : entry.entryId)}
-                              className="rounded-full border border-transparent px-2 text-xs font-semibold text-purple-500 transition hover:border-purple-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-purple-300"
-                              aria-label={`${expandedChordId === entry.entryId ? 'Hide' : 'Show'} notes`}
-                            >
-                              {expandedChordId === entry.entryId ? '▼' : '♪'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleStartEditChord(entry)}
-                            className="rounded-full border border-transparent px-2 text-xs font-semibold text-slate-500 transition hover:border-slate-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
-                            aria-label={`Edit ${entry.chord.label}`}
-                          >
-                            ✎
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleNotebookRemove(entry.entryId)}
-                            className="rounded-full border border-transparent px-2 text-xs font-semibold text-blue-500 transition hover:border-blue-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
-                            aria-label={`Remove ${entry.chord.label} from playground`}
-                          >
-                            ×
-                          </button>
-                        </div>
-                        <div className="text-center text-[10px] text-slate-500">
-                          {entry.tempoSeconds.toFixed(1)}s
-                          {entry.noteSequence && ` • ${entry.noteSequence.length} notes`}
-                        </div>
-                        {expandedChordId === entry.entryId && entry.noteSequence && (
-                          <div className="mt-2 w-full border-t border-slate-200 pt-2">
-                            <div className="text-[9px] font-semibold text-slate-600 mb-1">Notes:</div>
-                            <div className="flex flex-col gap-0.5">
-                              {entry.noteSequence.map((note, noteIdx) => (
-                                <div key={noteIdx} className="flex items-center gap-1 text-[9px] text-slate-600">
-                                  <span className="font-mono font-semibold text-purple-600">{note.note}{note.octave}</span>
-                                  <span className="text-slate-400">@{note.startOffset.toFixed(2)}s</span>
-                                  <span className="text-slate-400">({note.duration.toFixed(2)}s)</span>
-                                </div>
-                              ))}
+            ) : null}
+
+            {/* Music Sheet Visualization - Main Interface */}
+            {chordNotebook.length > 0 && (
+              <div className="mt-6 border-t border-slate-200 pt-6">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-slate-700">Music Sheet</h3>
+                    <span className="text-[10px] font-medium text-slate-500 px-2 py-0.5 rounded bg-slate-200">4/4 Time</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-medium text-slate-600">
+                        Transpose:
+                      </label>
+                      <select
+                        value={octaveTranspose}
+                        onChange={(e) => setOctaveTranspose(parseInt(e.target.value))}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs"
+                      >
+                        <option value="-2">-2 octaves</option>
+                        <option value="-1">-1 octave</option>
+                        <option value="0">No transpose</option>
+                        <option value="1">+1 octave</option>
+                        <option value="2">+2 octaves</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={transposeDisplay}
+                        onChange={(e) => setTransposeDisplay(e.target.checked)}
+                        className="rounded"
+                      />
+                      Transpose display too
+                    </label>
+                  </div>
+                </div>
+                <div className="overflow-x-auto" ref={musicSheetRef}>
+                  <div className="bg-slate-50 p-4 rounded">
+                    {(() => {
+                      // Build full note data with durations for proper rendering
+                      interface FullNoteData {
+                        beat: number;
+                        note: string;
+                        octave: number;
+                        chordLabel: string;
+                        duration: NoteDuration;
+                      }
+
+                      const fullNotes: FullNoteData[] = [];
+                      let accumulatedBeats = 0;
+
+                      chordNotebook.forEach(entry => {
+                        if (entry.noteSequence && entry.noteSequence.length > 0) {
+                          entry.noteSequence.forEach(note => {
+                            const absoluteBeat = accumulatedBeats + note.beat;
+                            const displayOctave = transposeDisplay ? note.octave + octaveTranspose : note.octave;
+                            fullNotes.push({
+                              beat: absoluteBeat,
+                              note: note.note,
+                              octave: displayOctave,
+                              chordLabel: entry.chord.label,
+                              duration: note.duration
+                            });
+                          });
+                        }
+                        // Each measure in 4/4 time = 4 beats
+                        accumulatedBeats += entry.measures * 4;
+                      });
+
+                      // Sort by beat
+                      fullNotes.sort((a, b) => a.beat - b.beat);
+
+                      // Map note to staff position (treble clef)
+                      // Staff lines from bottom to top: E4, G4, B4, D5, F5
+                      // Spaces from bottom to top: F4, A4, C5, E5
+                      const getNotePosition = (note: string, octave: number): number => {
+                        // Map each note to its position on treble staff (for octave 4)
+                        // Position 0 = E4 (bottom line), increases going up
+                        const notePositions: Record<string, number> = {
+                          'C': -2,   // C4 below staff
+                          'C#': -2,
+                          'D': -1,   // D4 below staff
+                          'D#': -1,
+                          'E': 0,    // E4 bottom line
+                          'F': 1,    // F4 first space
+                          'F#': 1,
+                          'G': 2,    // G4 second line
+                          'G#': 2,
+                          'A': 3,    // A4 second space
+                          'A#': 3,
+                          'B': 4,    // B4 third line
+                        };
+
+                        const basePos = notePositions[note] ?? 0;
+                        // Adjust for octave (each octave = 7 positions)
+                        const octaveOffset = (octave - 4) * 7;
+                        return basePos + octaveOffset;
+                      };
+
+                      // Staff lines (5 lines)
+                      const staffLinePositions = [0, 1, 2, 3, 4];
+
+                      // Calculate total width and measure boundaries
+                      const beatSpacing = 30; // pixels per beat
+                      const totalBeats = accumulatedBeats;
+                      const totalMeasures = Math.ceil(totalBeats / 4);
+                      const totalWidth = Math.max(800, totalMeasures * 4 * beatSpacing + 100);
+
+                      // Calculate measure bar positions (every 4 beats)
+                      const measureBars: number[] = [];
+                      for (let measure = 1; measure <= totalMeasures; measure++) {
+                        measureBars.push(measure * 4);
+                      }
+
+                      // Helper function to render note symbol based on duration
+                      const renderNoteSymbol = (duration: NoteDuration, yPos: number, xPos: number, isPlaying: boolean) => {
+                        const isFilled = ['quarter', 'eighth', 'sixteenth', 'dotted-quarter', 'dotted-eighth'].includes(duration);
+                        const hasFlag = ['eighth', 'sixteenth', 'dotted-eighth'].includes(duration);
+                        const hasStem = duration !== 'whole';
+                        const hasDot = duration.startsWith('dotted-');
+                        const stemHeight = 35;
+                        const stemUp = yPos < 74; // Stem direction based on position
+
+                        const playColor = '#ef4444'; // Bright red for playing
+                        const normalColor = '#000';
+
+                        return (
+                          <>
+                            {/* Note head */}
+                            <div
+                              className={`absolute rounded-full transition-all ${isPlaying ? 'scale-125' : ''}`}
+                              style={{
+                                top: `${yPos - 4}px`,
+                                left: `${xPos}px`,
+                                width: '11px',
+                                height: '8px',
+                                backgroundColor: isFilled ? (isPlaying ? playColor : normalColor) : 'transparent',
+                                border: isFilled ? 'none' : `2px solid ${isPlaying ? playColor : normalColor}`,
+                                transform: 'rotate(-20deg)',
+                                boxShadow: isPlaying ? '0 0 8px rgba(239, 68, 68, 0.6)' : 'none',
+                              }}
+                            />
+
+                            {/* Stem */}
+                            {hasStem && (
+                              <div
+                                className="absolute transition-all"
+                                style={{
+                                  top: stemUp ? `${yPos - stemHeight}px` : `${yPos}px`,
+                                  left: stemUp ? `${xPos + 9}px` : `${xPos}px`,
+                                  width: isPlaying ? '2px' : '1.5px',
+                                  height: `${stemHeight}px`,
+                                  backgroundColor: isPlaying ? playColor : normalColor,
+                                }}
+                              />
+                            )}
+
+                            {/* Flag for eighth/sixteenth notes */}
+                            {hasFlag && (
+                              <div
+                                className="absolute text-xl font-bold transition-all"
+                                style={{
+                                  top: stemUp ? `${yPos - stemHeight - 5}px` : `${yPos + stemHeight - 15}px`,
+                                  left: stemUp ? `${xPos + 7}px` : `${xPos - 3}px`,
+                                  color: isPlaying ? playColor : normalColor,
+                                  transform: stemUp ? 'scaleY(-1)' : 'none',
+                                }}
+                              >
+                                {duration === 'sixteenth' ? '♬' : '♪'}
+                              </div>
+                            )}
+
+                            {/* Dot for dotted notes */}
+                            {hasDot && (
+                              <div
+                                className="absolute w-1.5 h-1.5 rounded-full transition-all"
+                                style={{
+                                  top: `${yPos - 1}px`,
+                                  left: `${xPos + 15}px`,
+                                  backgroundColor: isPlaying ? playColor : normalColor,
+                                }}
+                              />
+                            )}
+                          </>
+                        );
+                      };
+
+                      return (
+                        <div className="relative" style={{ minWidth: `${totalWidth}px` }}>
+                          {/* Treble clef symbol */}
+                          <div className="absolute left-0 top-3 text-3xl font-serif text-slate-700">
+                            𝄞
+                          </div>
+
+                          {/* Staff lines - extended across all notes */}
+                          <div className="relative ml-12" style={{ height: '120px' }}>
+                            {staffLinePositions.map((linePos, idx) => (
+                              <div
+                                key={idx}
+                                className="absolute border-t border-slate-400"
+                                style={{
+                                  top: `${54 + idx * 10}px`,
+                                  left: 0,
+                                  right: 0,
+                                  width: `${totalWidth - 50}px`
+                                }}
+                              />
+                            ))}
+
+                            {/* Measure bar lines */}
+                            {measureBars.map((beatPosition, idx) => (
+                              <div
+                                key={`bar-${idx}`}
+                                className="absolute border-l-2 border-slate-600"
+                                style={{
+                                  top: '54px',
+                                  left: `${beatPosition * beatSpacing}px`,
+                                  height: '40px',
+                                }}
+                              />
+                            ))}
+
+                            {/* Playback position line (like Guitar Pro) */}
+                            {currentPlaybackBeat !== null && (
+                              <div
+                                className="absolute border-l-4 border-red-500 opacity-70 z-10"
+                                style={{
+                                  top: '44px',
+                                  left: `${currentPlaybackBeat * beatSpacing}px`,
+                                  height: '60px',
+                                  transition: 'left 0.05s linear',
+                                  boxShadow: '0 0 10px rgba(239, 68, 68, 0.5)',
+                                }}
+                              />
+                            )}
+
+                            {/* Notes */}
+                            <div className="absolute top-0 left-0 w-full">
+                              {fullNotes.map((note, noteIdx) => {
+                                // Check if this note is currently being played (playback line is on or past it)
+                                const isPlaying = currentPlaybackBeat !== null &&
+                                  currentPlaybackBeat >= note.beat &&
+                                  currentPlaybackBeat < note.beat + durationToBeats(note.duration);
+
+                                // Position based on beat number
+                                const xPosition = note.beat * beatSpacing;
+
+                                const position = getNotePosition(note.note, note.octave);
+                                // Middle line (B4) = position 4 = 74px
+                                // Each step up = -5px (half of 10px line spacing)
+                                const yPos = 74 - position * 5;
+
+                                return (
+                                  <div key={noteIdx} className="absolute" style={{ left: `${xPosition}px` }} data-note-beat={note.beat}>
+                                    {/* Render note symbol */}
+                                    {renderNoteSymbol(note.duration, yPos, 0, isPlaying)}
+
+                                    {/* Ledger lines for notes outside staff */}
+                                    {yPos < 54 && Array.from({ length: Math.ceil((54 - yPos) / 10) }, (_, i) => (
+                                      <div
+                                        key={`ledger-above-${i}`}
+                                        className="absolute border-t border-slate-400"
+                                        style={{
+                                          top: `${54 - (i + 1) * 10}px`,
+                                          left: '-4px',
+                                          width: '20px',
+                                        }}
+                                      />
+                                    ))}
+                                    {yPos > 94 && Array.from({ length: Math.ceil((yPos - 94) / 10) }, (_, i) => (
+                                      <div
+                                        key={`ledger-below-${i}`}
+                                        className="absolute border-t border-slate-400"
+                                        style={{
+                                          top: `${94 + (i + 1) * 10}px`,
+                                          left: '-4px',
+                                          width: '20px',
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
-                        )}
-                      </>
-                    )}
+
+                          {/* Chord labels at the bottom - only show on first note of each measure */}
+                          <div className="relative mt-8 ml-12" style={{ height: '20px' }}>
+                            {(() => {
+                              // Track which chords we've already shown in each measure
+                              const shownLabels = new Map<number, Set<string>>(); // measure -> set of chord labels
+                              const labelsToShow: Array<{ beat: number; label: string }> = [];
+
+                              fullNotes.forEach(note => {
+                                const measureNumber = Math.floor(note.beat / 4);
+
+                                if (!shownLabels.has(measureNumber)) {
+                                  shownLabels.set(measureNumber, new Set());
+                                }
+
+                                const chordsInMeasure = shownLabels.get(measureNumber)!;
+
+                                // Only show this chord label if it hasn't been shown in this measure yet
+                                if (!chordsInMeasure.has(note.chordLabel)) {
+                                  chordsInMeasure.add(note.chordLabel);
+                                  labelsToShow.push({ beat: note.beat, label: note.chordLabel });
+                                }
+                              });
+
+                              return labelsToShow.map((item, idx) => {
+                                // Find the chord entry for this label
+                                const chordEntry = chordNotebook.find(entry => entry.chord.label === item.label);
+
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => {
+                                      if (chordEntry) {
+                                        setExpandedChordId(chordEntry.entryId === expandedChordId ? null : chordEntry.entryId);
+                                      }
+                                    }}
+                                    className="absolute text-[10px] font-semibold text-slate-700 hover:text-blue-600 hover:underline cursor-pointer transition-colors"
+                                    style={{ left: `${item.beat * beatSpacing - 10}px` }}
+                                    title="Click to edit chord"
+                                  >
+                                    {item.label}
+                                  </button>
+                                );
+                              });
+                            })()}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
-                ))}
+                </div>
+
+                {/* Chord Edit Panel - appears when a chord name is clicked */}
+                {expandedChordId && (() => {
+                  const expandedEntry = chordNotebook.find(e => e.entryId === expandedChordId);
+                  if (!expandedEntry || !expandedEntry.noteSequence) return null;
+
+                  return (
+                    <div className="mt-6 rounded-lg border-2 border-blue-300 bg-blue-50/30 p-4">
+                      <div className="mb-4 flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-slate-800">Edit Chord</h4>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedChordId(null)}
+                          className="text-xs text-slate-500 hover:text-slate-700"
+                        >
+                          ✕ Close
+                        </button>
+                      </div>
+
+                      {/* Chord Name and Measures */}
+                      <div className="mb-4 flex gap-4">
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs font-semibold text-slate-600">Chord Name</span>
+                          <input
+                            type="text"
+                            value={editingChordId === expandedChordId ? editChordInput : expandedEntry.chord.label}
+                            onChange={(e) => {
+                              if (editingChordId !== expandedChordId) {
+                                handleStartEditChord(expandedEntry);
+                              }
+                              setEditChordInput(e.target.value);
+                            }}
+                            className="rounded border border-slate-300 px-2 py-1 text-sm w-40"
+                            placeholder="e.g. Cmaj7"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs font-semibold text-slate-600">Measures</span>
+                          <input
+                            type="number"
+                            min="0.25"
+                            max="16"
+                            step="0.25"
+                            value={editingChordId === expandedChordId ? editMeasuresInput : expandedEntry.measures.toString()}
+                            onChange={(e) => {
+                              if (editingChordId !== expandedChordId) {
+                                handleStartEditChord(expandedEntry);
+                              }
+                              setEditMeasuresInput(e.target.value);
+                            }}
+                            className="rounded border border-slate-300 px-2 py-1 text-sm w-20"
+                          />
+                        </label>
+                      </div>
+
+                      {/* Notes Table */}
+                      <div className="mb-4">
+                        <h5 className="mb-2 text-xs font-semibold text-slate-600">Notes</h5>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs border border-slate-200 rounded">
+                            <thead className="bg-slate-100">
+                              <tr>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Note</th>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Octave</th>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Beat</th>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Duration</th>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Velocity</th>
+                                <th className="px-2 py-1 text-left font-semibold text-slate-700">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {expandedEntry.noteSequence.map((note, noteIdx) => (
+                                <tr key={noteIdx} className="border-t border-slate-200">
+                                  <td className="px-2 py-1">
+                                    <select
+                                      value={note.note}
+                                      onChange={(e) => {
+                                        const newSequence = [...expandedEntry.noteSequence!];
+                                        newSequence[noteIdx] = { ...note, note: e.target.value };
+                                        setChordNotebook(prev => prev.map(entry =>
+                                          entry.entryId === expandedChordId
+                                            ? { ...entry, noteSequence: newSequence }
+                                            : entry
+                                        ));
+                                      }}
+                                      className="rounded border border-slate-300 px-1 py-0.5 text-xs w-full"
+                                    >
+                                      {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(n => (
+                                        <option key={n} value={n}>{n}</option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <input
+                                      type="number"
+                                      min="2"
+                                      max="6"
+                                      value={note.octave}
+                                      onChange={(e) => {
+                                        const newSequence = [...expandedEntry.noteSequence!];
+                                        newSequence[noteIdx] = { ...note, octave: parseInt(e.target.value) || 4 };
+                                        setChordNotebook(prev => prev.map(entry =>
+                                          entry.entryId === expandedChordId
+                                            ? { ...entry, noteSequence: newSequence }
+                                            : entry
+                                        ));
+                                      }}
+                                      className="rounded border border-slate-300 px-1 py-0.5 text-xs w-12"
+                                    />
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="16"
+                                      step="0.25"
+                                      value={note.beat}
+                                      onChange={(e) => {
+                                        const newSequence = [...expandedEntry.noteSequence!];
+                                        newSequence[noteIdx] = { ...note, beat: parseFloat(e.target.value) || 0 };
+                                        setChordNotebook(prev => prev.map(entry =>
+                                          entry.entryId === expandedChordId
+                                            ? { ...entry, noteSequence: newSequence }
+                                            : entry
+                                        ));
+                                      }}
+                                      className="rounded border border-slate-300 px-1 py-0.5 text-xs w-16"
+                                    />
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <select
+                                      value={note.duration}
+                                      onChange={(e) => {
+                                        const newSequence = [...expandedEntry.noteSequence!];
+                                        newSequence[noteIdx] = { ...note, duration: e.target.value as NoteDuration };
+                                        setChordNotebook(prev => prev.map(entry =>
+                                          entry.entryId === expandedChordId
+                                            ? { ...entry, noteSequence: newSequence }
+                                            : entry
+                                        ));
+                                      }}
+                                      className="rounded border border-slate-300 px-1 py-0.5 text-xs w-full"
+                                    >
+                                      <option value="whole">whole</option>
+                                      <option value="half">half</option>
+                                      <option value="quarter">quarter</option>
+                                      <option value="eighth">eighth</option>
+                                      <option value="sixteenth">sixteenth</option>
+                                      <option value="dotted-half">dotted-half</option>
+                                      <option value="dotted-quarter">dotted-quarter</option>
+                                      <option value="dotted-eighth">dotted-eighth</option>
+                                    </select>
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="127"
+                                      value={note.velocity}
+                                      onChange={(e) => {
+                                        const newSequence = [...expandedEntry.noteSequence!];
+                                        newSequence[noteIdx] = { ...note, velocity: parseInt(e.target.value) || 96 };
+                                        setChordNotebook(prev => prev.map(entry =>
+                                          entry.entryId === expandedChordId
+                                            ? { ...entry, noteSequence: newSequence }
+                                            : entry
+                                        ));
+                                      }}
+                                      className="rounded border border-slate-300 px-1 py-0.5 text-xs w-16"
+                                    />
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newSequence = expandedEntry.noteSequence!.filter((_, idx) => idx !== noteIdx);
+                                        if (newSequence.length === 0) {
+                                          // If removing last note, remove the entire chord
+                                          handleNotebookRemove(expandedChordId);
+                                          setExpandedChordId(null);
+                                        } else {
+                                          setChordNotebook(prev => prev.map(entry =>
+                                            entry.entryId === expandedChordId
+                                              ? { ...entry, noteSequence: newSequence }
+                                              : entry
+                                          ));
+                                        }
+                                      }}
+                                      className="text-red-600 hover:text-red-800 text-xs"
+                                      title="Remove note"
+                                    >
+                                      ✕
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Add Note Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newNote: NoteEvent = {
+                              note: 'C',
+                              octave: 4,
+                              beat: 0,
+                              duration: 'quarter',
+                              velocity: 96
+                            };
+                            const newSequence = [...expandedEntry.noteSequence!, newNote];
+                            setChordNotebook(prev => prev.map(entry =>
+                              entry.entryId === expandedChordId
+                                ? { ...entry, noteSequence: newSequence }
+                                : entry
+                            ));
+                          }}
+                          className="mt-2 rounded border border-blue-300 bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-200"
+                        >
+                          + Add Note
+                        </button>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleNotebookRemove(expandedChordId);
+                            setExpandedChordId(null);
+                          }}
+                          className="rounded bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                        >
+                          Remove Chord
+                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedChordId(null);
+                              if (editingChordId === expandedChordId) {
+                                handleCancelEditChord();
+                              }
+                            }}
+                            className="rounded border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                          >
+                            Close
+                          </button>
+                          {editingChordId === expandedChordId && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleSaveEditChord(expandedChordId);
+                                setExpandedChordId(null);
+                              }}
+                              className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                            >
+                              Save Changes
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </section>

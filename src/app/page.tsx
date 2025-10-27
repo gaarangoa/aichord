@@ -138,6 +138,7 @@ const createDefaultSessionData = (): SessionData => ({
   octaveTranspose: 0,
   transposeDisplay: false,
   controls: createControlState(),
+  ollamaSessionId: createId(),
 });
 
 const deriveSessionNameFromMessages = (messages: ChatMessage[]): string | null => {
@@ -206,6 +207,9 @@ export default function Home() {
   const [diagramControls, setDiagramControls] = useState<ChordPlaybackControls>(() =>
     createControlState(initialSessionRef.current?.controls)
   );
+  const [ollamaSessionId, setOllamaSessionId] = useState<string>(
+    initialSessionRef.current?.ollamaSessionId ?? createId()
+  );
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
   const [editMeasuresInput, setEditMeasuresInput] = useState('1');
@@ -235,6 +239,13 @@ export default function Home() {
     updatedAt: Date.now(),
   });
   const hasLoadedSessionsRef = useRef(false);
+  const sessionInitRef = useRef<Map<string, boolean>>(new Map());
+
+  if (!sessionInitRef.current.has(ollamaSessionId)) {
+    const initialMessages = initialSessionRef.current?.messages ?? [];
+    const hasHistory = initialMessages.some(message => message.role !== 'system');
+    sessionInitRef.current.set(ollamaSessionId, !hasHistory);
+  }
 
   const applySessionData = useCallback(
     (data?: SessionData) => {
@@ -272,6 +283,10 @@ export default function Home() {
       setOctaveTranspose(payload.octaveTranspose ?? defaults.octaveTranspose);
       setTransposeDisplay(payload.transposeDisplay ?? defaults.transposeDisplay);
       setDiagramControls(createControlState(payload.controls));
+      const nextSessionId = payload.ollamaSessionId ?? createId();
+      setOllamaSessionId(nextSessionId);
+      const hasHistory = hydratedMessages.some(message => message.role !== 'system');
+      sessionInitRef.current.set(nextSessionId, !hasHistory);
     },
     [
       setMessages,
@@ -285,6 +300,7 @@ export default function Home() {
       setOctaveTranspose,
       setTransposeDisplay,
       setDiagramControls,
+      setOllamaSessionId,
     ]
   );
 
@@ -334,6 +350,7 @@ export default function Home() {
     const agentOption = agentProfiles.find(agent => agent.id === selectedAgentId);
     const fallbackAgent = agentOption ?? agentProfiles[0] ?? null;
     const agentId = fallbackAgent?.id ?? '';
+    const newSessionId = createId();
 
     return {
       ...createDefaultSessionData(),
@@ -346,6 +363,7 @@ export default function Home() {
       octaveTranspose,
       transposeDisplay,
       controls: createControlState(diagramControls),
+      ollamaSessionId: newSessionId,
     };
   }, [
     providers,
@@ -462,6 +480,210 @@ export default function Home() {
     setDiagramControls(prev => (controlsEqual(prev, controls) ? prev : controls));
   }, []);
 
+  const buildSystemMessages = useCallback((): Array<{ role: 'system'; content: string }> => {
+    const trimmedInstructions = chatInstructions.trim();
+    const progressionDetails = chordNotebook.map(entry =>
+      `${entry.chord.label} (${entry.measures} bar${entry.measures !== 1 ? 's' : ''})`
+    );
+    const progressionMessage = progressionDetails.length
+      ? `Chord progression: ${progressionDetails.join(' → ')}`
+      : 'Chord progression: (none selected yet)';
+
+    const result: Array<{ role: 'system'; content: string }> = [];
+    if (trimmedInstructions) {
+      result.push({ role: 'system', content: `Instructions: ${trimmedInstructions}` });
+    }
+    result.push({ role: 'system', content: progressionMessage });
+    if (agentPrompt.trim()) {
+      result.push({ role: 'system', content: agentPrompt.trim() });
+    }
+    return result;
+  }, [agentPrompt, chatInstructions, chordNotebook]);
+
+  const streamAgentResponse = useCallback(
+    async (userContent: string, assistantMessageId: string, conversationHistory: ChatMessage[]) => {
+      const agent = agentProfiles.find(profile => profile.id === selectedAgentId) ?? null;
+      if (!selectedModel || !agent || !agentPrompt) {
+        throw new Error('Select an agent and model before sending instructions.');
+      }
+
+      const systemMessages = buildSystemMessages();
+      const historyInitialized = sessionInitRef.current.get(ollamaSessionId) ?? false;
+      const needsHistory = !historyInitialized;
+      const historyPayload = needsHistory
+        ? conversationHistory
+            .filter(message => message.role !== 'system')
+            .map(message => ({ role: message.role, content: message.content }))
+        : undefined;
+
+      setChatError(null);
+      setIsSending(true);
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          provider: selectedProvider,
+          model: selectedModel,
+          sessionId: ollamaSessionId,
+          systemMessages,
+          history: historyPayload,
+          message: userContent,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        const errorText = await response.text();
+        setIsSending(false);
+        throw new Error(errorText || 'Failed to get a response from the selected model.');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantContent = '';
+      let tokenCount: number | undefined;
+      let buffer = '';
+
+      const normalizeChunkText = (input: unknown): string => {
+        if (!input) return '';
+        if (typeof input === 'string') return input;
+        if (Array.isArray(input)) {
+          return input.map(item => normalizeChunkText(item)).join('');
+        }
+        if (typeof input === 'object') {
+          const record = input as Record<string, unknown>;
+          if (typeof record.text === 'string') return record.text;
+          if (typeof record.content === 'string') return record.content;
+          if (typeof record.message === 'string') return record.message;
+        }
+        return '';
+      };
+
+      const updateAssistantMessage = (content: string, tokens?: number) => {
+        setMessages(prev =>
+          prev.map(message =>
+            message.id === assistantMessageId
+              ? { ...message, content, tokens: tokens ?? message.tokens }
+              : message
+          )
+        );
+      };
+
+      const appendChunkText = (input: unknown) => {
+        const text = normalizeChunkText(input);
+        if (!text) return;
+        assistantContent += text;
+        updateAssistantMessage(assistantContent);
+      };
+
+      const applyFinalText = (input: unknown) => {
+        const text = normalizeChunkText(input);
+        if (!text) return;
+        assistantContent = text;
+        updateAssistantMessage(assistantContent);
+      };
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() ?? '';
+          for (const event of events) {
+            const line = event.trim();
+            if (!line.startsWith('data:')) continue;
+            const dataStr = line.slice(5).trim();
+            if (!dataStr) continue;
+            let payload: {
+              delta?: unknown;
+              content?: unknown;
+              done?: boolean;
+              tokens?: number | null;
+              error?: string;
+            };
+            try {
+              payload = JSON.parse(dataStr);
+            } catch {
+              continue;
+            }
+            if (payload.error) {
+              throw new Error(payload.error);
+            }
+            if (payload.delta !== undefined) {
+              appendChunkText(payload.delta);
+            }
+            if (payload.done) {
+              if (payload.tokens !== undefined && payload.tokens !== null) {
+                tokenCount = payload.tokens;
+              }
+              if (payload.content !== undefined) {
+                applyFinalText(payload.content);
+              }
+            }
+          }
+        }
+
+        if (buffer.trim()) {
+          const lines = buffer.split('\n');
+          for (const rawLine of lines) {
+            const trimmed = rawLine.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const dataStr = trimmed.slice(5).trim();
+            if (!dataStr) continue;
+            let payload: {
+              delta?: unknown;
+              content?: unknown;
+              done?: boolean;
+              tokens?: number | null;
+              error?: string;
+            };
+            try {
+              payload = JSON.parse(dataStr);
+            } catch {
+              continue;
+            }
+            if (payload.error) {
+              throw new Error(payload.error);
+            }
+            if (payload.delta !== undefined) {
+              appendChunkText(payload.delta);
+            }
+            if (payload.done) {
+              if (payload.tokens !== undefined && payload.tokens !== null) {
+                tokenCount = payload.tokens;
+              }
+              if (payload.content !== undefined) {
+                applyFinalText(payload.content);
+              }
+            }
+          }
+        }
+
+        updateAssistantMessage(assistantContent, tokenCount);
+        sessionInitRef.current.set(ollamaSessionId, true);
+        return assistantContent;
+      } catch (error) {
+        sessionInitRef.current.set(ollamaSessionId, false);
+        throw error;
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [
+      selectedModel,
+      selectedProvider,
+      agentProfiles,
+      selectedAgentId,
+      agentPrompt,
+      ollamaSessionId,
+      buildSystemMessages,
+      setMessages,
+    ]
+  );
+
   const buildSessionRecord = useCallback((): SessionRecord | null => {
     if (!activeSessionId) {
       return null;
@@ -490,6 +712,7 @@ export default function Home() {
       octaveTranspose,
       transposeDisplay,
       controls: createControlState(diagramControls),
+      ollamaSessionId,
     };
 
     return {
@@ -513,6 +736,7 @@ export default function Home() {
     octaveTranspose,
     transposeDisplay,
     diagramControls,
+    ollamaSessionId,
   ]);
 
   useEffect(() => {
@@ -961,131 +1185,6 @@ export default function Home() {
     ]);
   }, [relativeVelocity, adjustNotesToTargetVelocity, clampVelocity]);
 
-  const sendConversationToAgent = useCallback(
-    async (conversationMessages: ChatMessage[]) => {
-      if (!selectedModel || !activeAgent || !agentPrompt) {
-        setChatError('Select an agent and model before sending instructions.');
-        return;
-      }
-
-      const trimmedInstructions = chatInstructions.trim();
-      const progressionDetails = chordNotebook.map(entry =>
-        `${entry.chord.label} (${entry.measures} bar${entry.measures !== 1 ? 's' : ''})`
-      );
-      const progressionMessage = progressionDetails.length
-        ? `Chord progression: ${progressionDetails.join(' → ')}`
-        : 'Chord progression: (none selected yet)';
-
-      const systemMessages = [
-        ...(trimmedInstructions
-          ? [{ role: 'system' as const, content: `Instructions: ${trimmedInstructions}` }]
-          : []),
-        { role: 'system' as const, content: progressionMessage },
-        ...(agentPrompt.trim()
-          ? [{ role: 'system' as const, content: agentPrompt.trim() }]
-          : []),
-      ];
-
-      const filteredConversation = conversationMessages.filter(message => message.role !== 'system');
-
-      const payloadMessages = [
-        ...systemMessages,
-        ...filteredConversation.map(message => ({
-          role: message.role,
-          content: message.content,
-        })),
-      ];
-
-      setChatError(null);
-      setIsSending(true);
-
-      try {
-        const response = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            provider: selectedProvider,
-            model: selectedModel,
-            messages: payloadMessages,
-          }),
-        });
-
-        const raw = await response.text();
-
-        if (!response.ok) {
-          let errorMessage = 'Failed to get a response from the selected model.';
-          if (raw) {
-            try {
-              const parsed = JSON.parse(raw) as { error?: string };
-              if (parsed.error) {
-                errorMessage = parsed.error;
-              } else {
-                errorMessage = raw;
-              }
-            } catch {
-              errorMessage = raw;
-            }
-          }
-          throw new Error(errorMessage);
-        }
-
-        if (!raw) {
-          throw new Error('The selected model returned an empty response.');
-        }
-
-        let assistantContent = '';
-        try {
-          const data = JSON.parse(raw) as { message?: { content?: string } };
-          assistantContent = data.message?.content?.trim() ?? '';
-        } catch {
-          assistantContent = raw;
-        }
-
-        if (!assistantContent) {
-          throw new Error('The selected model did not return any content.');
-        }
-
-        // Extract token usage from response
-        let tokenCount: number | undefined;
-        try {
-          const parsedResponse = JSON.parse(raw) as {
-            message?: { content?: string };
-            eval_count?: number;
-            prompt_eval_count?: number;
-          };
-          // Ollama returns eval_count (output tokens) and prompt_eval_count (input tokens)
-          if (parsedResponse.eval_count !== undefined) {
-            tokenCount = parsedResponse.eval_count;
-          }
-        } catch {
-          // If parsing fails, token count remains undefined
-        }
-
-        appendMessage({
-          id: createId(),
-          role: 'assistant',
-          content: assistantContent,
-          timestamp: Date.now(),
-          tokens: tokenCount,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
-        setChatError(message);
-        appendMessage({
-          id: createId(),
-          role: 'system',
-          content: `⚠️ ${message}`,
-          timestamp: Date.now(),
-        });
-      } finally {
-        setIsSending(false);
-      }
-    },
-    [activeAgent, agentPrompt, appendMessage, chatInstructions, chordNotebook, selectedModel, selectedProvider]
-  );
-
   const handleChordTriggered = useCallback(
     (event: ChordTriggerEvent) => {
       if (suppressNotebookAppendRef.current) {
@@ -1203,29 +1302,66 @@ export default function Home() {
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
 
-      if (!chatInput.trim() || !selectedModel || !agentPrompt || !activeAgent || isSending) {
+      const trimmed = chatInput.trim();
+      if (!trimmed || isSending) {
         return;
       }
 
-      const userText = chatInput.trim();
-      // Rough approximation: ~4 characters per token
-      const estimatedTokens = Math.ceil(userText.length / 4);
+      if (!selectedModel || !activeAgent || !agentPrompt) {
+        setChatError('Select an agent and model before sending instructions.');
+        return;
+      }
+
+      const estimatedTokens = Math.ceil(trimmed.length / 4);
 
       const userMessage: ChatMessage = {
         id: createId(),
         role: 'user',
-        content: userText,
+        content: trimmed,
         timestamp: Date.now(),
         tokens: estimatedTokens,
       };
 
+      const conversationHistory = messages.filter(message => message.role !== 'system');
+
       appendMessage(userMessage);
       setChatInput('');
       setChatError(null);
-      const updatedMessages = [...messages, userMessage];
-      await sendConversationToAgent(updatedMessages);
+
+      const assistantMessageId = createId();
+      setMessages(prev => [
+        ...prev,
+        {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+        },
+      ]);
+
+      try {
+        await streamAgentResponse(trimmed, assistantMessageId, conversationHistory);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
+        setMessages(prev => prev.filter(entry => entry.id !== assistantMessageId));
+        appendMessage({
+          id: createId(),
+          role: 'system',
+          content: `⚠️ ${message}`,
+          timestamp: Date.now(),
+        });
+      }
     },
-    [activeAgent, agentPrompt, appendMessage, chatInput, isSending, messages, selectedModel, sendConversationToAgent]
+    [
+      activeAgent,
+      agentPrompt,
+      appendMessage,
+      chatInput,
+      isSending,
+      messages,
+      selectedModel,
+      streamAgentResponse,
+    ]
   );
 
   const handleSendSessionSummary = useCallback(async () => {
@@ -1245,10 +1381,42 @@ export default function Home() {
       timestamp: Date.now(),
     };
 
+    const conversationHistory = messages.filter(message => message.role !== 'system');
+
     appendMessage(briefingMessage);
-    const updatedMessages = [...messages, briefingMessage];
-    await sendConversationToAgent(updatedMessages);
-  }, [activeAgent, agentPrompt, appendMessage, isSending, messages, selectedModel, sendConversationToAgent]);
+
+    const assistantMessageId = createId();
+    setMessages(prev => [
+      ...prev,
+      {
+        id: assistantMessageId,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+      },
+    ]);
+
+    try {
+      await streamAgentResponse('Summarize the current session so far.', assistantMessageId, conversationHistory);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
+      setMessages(prev => prev.filter(entry => entry.id !== assistantMessageId));
+      appendMessage({
+        id: createId(),
+        role: 'system',
+        content: `⚠️ ${message}`,
+        timestamp: Date.now(),
+      });
+    }
+  }, [
+    activeAgent,
+    agentPrompt,
+    appendMessage,
+    isSending,
+    messages,
+    selectedModel,
+    streamAgentResponse,
+  ]);
 
   const handleNotebookPlay = useCallback(async (entryId: string) => {
     const target = chordNotebook.find(entry => entry.entryId === entryId);

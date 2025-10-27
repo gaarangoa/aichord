@@ -305,6 +305,12 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(
     setVelocityVariance(clamped);
   }, []);
 
+  const handleMidiOutputChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const next = event.target.value;
+    setMidiError(null);
+    selectMidiOutput(next ? next : null);
+  }, [selectMidiOutput, setMidiError]);
+
   const handleInternalAudioToggle = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     setUseInternalAudio(event.target.checked);
   }, []);
@@ -570,6 +576,143 @@ return (
           </button>
         </div>
       </div>
+
+    {!isPanelCollapsed && (
+      <div className="mx-4 mt-3 space-y-4 rounded-lg border border-slate-200 bg-white px-4 py-4 text-xs shadow-sm">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Note Length (seconds)
+            <input
+              type="number"
+              min="0.2"
+              max="30"
+              step="0.1"
+              value={noteDurationSeconds}
+              onChange={handleDurationChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            />
+            <span className="text-[11px] font-normal text-slate-500">
+              Holds for approximately {displayHoldSeconds}s per chord
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Base Octave
+            <select
+              value={baseOctave}
+              onChange={handleBaseOctaveChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            >
+              {OCTAVE_OPTIONS.map(option => (
+                <option key={option} value={option}>
+                  Octave {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Velocity
+            <input
+              type="number"
+              min="1"
+              max="127"
+              value={velocity}
+              onChange={handleVelocityChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Velocity Variance %
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={velocityVariance}
+              onChange={handleVelocityVarianceChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Arpeggio Interval (ms)
+            <input
+              type="number"
+              min="1"
+              max="250"
+              value={arpeggioIntervalMs}
+              onChange={handleArpeggioIntervalChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Timing Jitter %
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={arpeggioTimingJitterPercent}
+              onChange={handleArpeggioJitterChange}
+              className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+            />
+          </label>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={useInternalAudio}
+                onChange={handleInternalAudioToggle}
+                className="rounded"
+              />
+              Use internal audio
+            </label>
+            <p className="text-[11px] text-slate-500">
+              When disabled, chords send to the selected MIDI device only.
+            </p>
+            {audioError && <p className="text-[11px] text-rose-600">{audioError}</p>}
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-slate-700">MIDI Output</p>
+            {!isMidiSupported ? (
+              <p className="text-[11px] text-slate-500">Web MIDI is not supported in this browser.</p>
+            ) : !hasMidiAccess ? (
+              <button
+                type="button"
+                onClick={handleConnectMidi}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+              >
+                Connect MIDI
+              </button>
+            ) : midiOutputs.length === 0 ? (
+              <p className="text-[11px] text-slate-500">No MIDI outputs detected.</p>
+            ) : (
+              <label className="flex flex-col gap-1 text-[11px] font-semibold text-slate-600">
+                Output Device
+                <select
+                  value={selectedOutputId ?? ''}
+                  onChange={handleMidiOutputChange}
+                  className="rounded-md border border-slate-300 px-2 py-1 text-sm font-normal text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-200"
+                >
+                  <option value="">Auto-select first available</option>
+                  {midiOutputs.map(output => (
+                    <option key={output.id} value={output.id}>
+                      {output.name ?? 'Unnamed Output'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {midiError && <p className="text-[11px] text-rose-600">{midiError}</p>}
+          </div>
+        </div>
+      </div>
+    )}
 
     <div className="flex-1 w-full overflow-auto px-4 pb-6 pt-2">
       <div className="w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-sm">

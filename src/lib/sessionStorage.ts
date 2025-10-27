@@ -18,6 +18,7 @@ export interface SessionData {
   octaveTranspose: number;
   transposeDisplay: boolean;
   controls: ChordPlaybackControls;
+  ollamaSessionId: string | null;
 }
 
 export interface SessionRecord {

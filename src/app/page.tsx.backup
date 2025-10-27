@@ -306,27 +306,6 @@ export default function Home() {
     loadAgents().catch(() => null);
   }, []);
 
-  // Auto-connect to MIDI and select first device
-  useEffect(() => {
-    const autoConnectMidi = async () => {
-      if (diagramRef.current) {
-        try {
-          await diagramRef.current.requestMidiAccess();
-          const state = diagramRef.current.getMidiState();
-          if (state.hasAccess && state.outputs.length > 0 && !state.selectedOutputId) {
-            diagramRef.current.selectMidiOutput(state.outputs[0].id);
-          }
-        } catch (error) {
-          console.error('Failed to auto-connect MIDI:', error);
-        }
-      }
-    };
-
-    // Delay to ensure ChordDiagram is mounted
-    const timer = setTimeout(autoConnectMidi, 1000);
-    return () => clearTimeout(timer);
-  }, []);
-
   useEffect(() => {
     if (providers.length === 0) {
       return;
@@ -1127,15 +1106,16 @@ export default function Home() {
       <Sidebar
         onChordMatrixClick={() => setIsChordMatrixOpen(true)}
         onSettingsClick={() => setIsSettingsOpen(true)}
+        onSessionsClick={() => {/* TODO: Implement sessions */}}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 ml-16 flex flex-col h-screen overflow-hidden">
 
         {/* Music Sheet - Fixed at top */}
-        <section className="bg-white border-b border-slate-200 shadow-sm w-full">
-          <div className="w-full py-4">
-            <div className="flex items-center justify-between gap-4 mb-4 px-4">
+        <section className="bg-white border-b border-slate-200 shadow-sm">
+          <div className="px-6 py-4">
+            <div className="flex items-center justify-between gap-4 mb-4">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-semibold text-slate-900">Music Sheet</h2>
                 <span className="text-[10px] font-medium text-slate-500 px-2 py-0.5 rounded bg-slate-200">4/4 Time</span>
@@ -1179,7 +1159,64 @@ export default function Home() {
               </div>
             </div>
             <div className="overflow-x-auto" ref={musicSheetRef}>
-              <div className="bg-slate-50 p-4 rounded">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-slate-700">Music Sheet</h3>
+                    <span className="text-[10px] font-medium text-slate-500 px-2 py-0.5 rounded bg-slate-200">4/4 Time</span>
+                  </div>
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-medium text-slate-600">
+                        Transpose:
+                      </label>
+                      <select
+                        value={octaveTranspose}
+                        onChange={(e) => setOctaveTranspose(parseInt(e.target.value))}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs"
+                      >
+                        <option value="-2">-2 octaves</option>
+                        <option value="-1">-1 octave</option>
+                        <option value="0">No transpose</option>
+                        <option value="1">+1 octave</option>
+                        <option value="2">+2 octaves</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={transposeDisplay}
+                        onChange={(e) => setTransposeDisplay(e.target.checked)}
+                        className="rounded"
+                      />
+                      Transpose display too
+                    </label>
+                    <div className="flex items-center gap-2 border-l border-slate-300 pl-4">
+                      <label className="text-xs font-medium text-slate-600" title="Adjust all note velocities relative to the median">
+                        Relative Velocity:
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="127"
+                        value={relativeVelocity}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value, 10);
+                          if (Number.isNaN(value)) {
+                            return;
+                          }
+                          handleRelativeVelocityChange(value);
+                        }}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs w-16"
+                        title="Set target velocity; existing notes shift together"
+                      />
+                      <span className="text-[10px] text-slate-500">
+                        (current median: {currentMedianVelocity})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="overflow-x-auto" ref={musicSheetRef}>
+                  <div className="bg-slate-50 p-4 rounded">
                     {(() => {
                       // Build full note data with durations for proper rendering
                       interface FullNoteData {
@@ -1340,8 +1377,13 @@ export default function Home() {
                       if (fullNotes.length === 0) {
                         return (
                           <div className="relative" style={{ minWidth: '800px', height: '120px' }}>
+                            {/* Treble clef symbol */}
+                            <div className="absolute left-0 top-3 text-3xl font-serif text-slate-700">
+                              𝄞
+                            </div>
+
                             {/* Staff lines */}
-                            <div className="relative" style={{ height: '120px' }}>
+                            <div className="relative ml-12" style={{ height: '120px' }}>
                               {staffLinePositions.map((_, idx) => (
                                 <div
                                   key={idx}
@@ -1353,6 +1395,11 @@ export default function Home() {
                                   }}
                                 />
                               ))}
+
+                              {/* Empty state message */}
+                              <div className="absolute top-16 left-1/2 transform -translate-x-1/2 text-sm text-slate-400 italic">
+                                Play a chord from the diagram or add chords from the chat...
+                              </div>
                             </div>
                           </div>
                         );
@@ -1360,8 +1407,13 @@ export default function Home() {
 
                       return (
                         <div className="relative" style={{ minWidth: `${totalWidth}px` }}>
+                          {/* Treble clef symbol */}
+                          <div className="absolute left-0 top-3 text-3xl font-serif text-slate-700">
+                            𝄞
+                          </div>
+
                           {/* Staff lines - extended across all notes */}
-                          <div className="relative" style={{ height: '120px' }}>
+                          <div className="relative ml-12" style={{ height: '120px' }}>
                             {staffLinePositions.map((_, idx) => (
                               <div
                                 key={idx}
@@ -1561,6 +1613,7 @@ export default function Home() {
                       );
                     })()}
                   </div>
+                </div>
 
                 {/* Chord Edit Panel - appears when a chord name is clicked */}
                 {expandedChordId && (() => {
@@ -1828,158 +1881,273 @@ export default function Home() {
                   );
                 })()}
               </div>
-            </div>
           </section>
 
-          {/* Creative Chat - Fills 100% of remaining screen */}
-          <section className="flex-1 flex flex-col bg-slate-50 min-h-0">
-              {/* Header with agent info - subtle like ChatGPT */}
-              <div className="flex items-center justify-center border-b border-slate-200 bg-white px-4 py-3">
-                {activeAgent && selectedModel && (
-                  <span className="text-xs text-slate-500">
-                    {activeAgent.label} • {modelOptions.find(m => m.id === selectedModel)?.label ?? selectedModel}
-                  </span>
+          {/* Creative Chat - Second */}
+          <section className="flex flex-col w-full rounded-2xl bg-white p-4 shadow-md sm:p-6" style={{ height: isConfigCollapsed ? '500px' : '400px' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">Creative Chat</h2>
+                  <button
+                    type="button"
+                    onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+                    aria-label={isConfigCollapsed ? 'Show configuration' : 'Hide configuration'}
+                  >
+                    {isConfigCollapsed ? '⚙️ Show Config' : '⚙️ Hide Config'}
+                  </button>
+                  {isConfigCollapsed && activeAgent && selectedModel && (
+                    <span className="text-xs text-slate-500">
+                      {activeAgent.label} • {modelOptions.find(m => m.id === selectedModel)?.label ?? selectedModel}
+                    </span>
+                  )}
+                </div>
+                {!isConfigCollapsed && (
+                  <div className="flex flex-col items-start gap-2 text-xs font-medium text-slate-600">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-2">
+                      Provider
+                      <select
+                        value={selectedProvider}
+                        onChange={handleProviderChange}
+                        disabled={isLoadingProviders || providers.length === 0}
+                        className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {providers.map(option => {
+                          const disabledOption = !option.available || option.models.length === 0;
+                          const optionLabel = !option.available && option.error
+                            ? `${option.label} (${option.error})`
+                            : option.label;
+                          return (
+                            <option key={option.id} value={option.id} disabled={disabledOption}>
+                              {optionLabel}
+                            </option>
+                          );
+                        })}
+                        {providers.length === 0 && (
+                          <option value="">No providers</option>
+                        )}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      Model
+                      <select
+                        value={selectedModel}
+                        onChange={handleModelChange}
+                        disabled={
+                          isLoadingProviders || !modelOptions.length || !activeProvider?.available
+                        }
+                        className="min-w-[7rem] rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isLoadingProviders && <option value="">Loading...</option>}
+                        {!isLoadingProviders && modelOptions.length === 0 && (
+                          <option value="">No models</option>
+                        )}
+                        {modelOptions.map(option => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-2">
+                      Agent
+                      <select
+                        value={selectedAgentId}
+                        onChange={handleAgentChange}
+                        disabled={isLoadingAgents || agentProfiles.length === 0}
+                        className="min-w-[8rem] rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isLoadingAgents && <option value="">Loading...</option>}
+                        {!isLoadingAgents && agentProfiles.length === 0 && (
+                          <option value="">No agents yet</option>
+                        )}
+                        {agentProfiles.map(agent => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleToggleAgentCreation}
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+                    >
+                      {isCreatingAgent ? 'Cancel' : 'New profile'}
+                    </button>
+                </div>
+              </div>
                 )}
               </div>
 
-              {/* Messages Container - ChatGPT Style */}
+            {!isConfigCollapsed && (
+              <label className="mt-4 flex flex-col gap-2 text-xs text-slate-600">
+              <span className="text-sm font-semibold text-slate-700">Session instructions</span>
+              <textarea
+                value={chatInstructions}
+                onChange={event => setChatInstructions(event.target.value)}
+                rows={6}
+                placeholder="Describe the style, mood, and goals for this writing session..."
+                className="min-h-[140px] rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none"
+              />
+              <span className="text-[11px] text-slate-500">
+                These notes are shared with the selected agent before each message.
+              </span>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleSendSessionSummary}
+                  disabled={isSending || !activeAgent || !selectedModel || !agentPrompt}
+                  className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                >
+                  Send to agent
+                </button>
+              </div>
+            </label>
+            )}
+
+            {!isConfigCollapsed && isLoadingProviders && (
+              <p className="mt-2 text-xs text-slate-500">Loading models...</p>
+            )}
+              {!isConfigCollapsed && !isLoadingProviders && providerError && (
+                <p className="mt-2 text-xs text-rose-600">{providerError}</p>
+              )}
+              {!isConfigCollapsed && !isLoadingProviders &&
+                !providerError &&
+                activeProvider &&
+                !activeProvider.available &&
+                activeProvider.error && (
+                  <p className="mt-2 text-xs text-amber-600">{activeProvider.error}</p>
+                )}
+              {!isConfigCollapsed && isLoadingAgents && (
+                <p className="mt-2 text-xs text-slate-500">Loading agent profiles...</p>
+              )}
+              {!isConfigCollapsed && !isLoadingAgents && agentError && (
+                <p className="mt-2 text-xs text-rose-600">{agentError}</p>
+              )}
+              {!isConfigCollapsed && !isLoadingAgents && !agentError && activeAgent && (
+                <p className="mt-2 text-xs text-slate-500">Agent: {activeAgent.label}</p>
+              )}
+
+              {!isConfigCollapsed && isCreatingAgent && (
+                <form
+                  onSubmit={handleCreateAgentSubmit}
+                  className="mt-3 w-full rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 shadow-inner"
+                >
+                  <label className="flex flex-col gap-1">
+                    <span className="font-semibold text-slate-600">Agent name</span>
+                    <input
+                      value={newAgentName}
+                      onChange={event => setNewAgentName(event.target.value)}
+                      placeholder="e.g. Ambient Architect"
+                      className="rounded border border-slate-300 px-2 py-1 focus:border-blue-500 focus:outline-none"
+                    />
+                  </label>
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="font-semibold text-slate-600">Prompt</span>
+                    <textarea
+                      value={newAgentPrompt}
+                      onChange={event => setNewAgentPrompt(event.target.value)}
+                      rows={5}
+                      placeholder="Describe how this agent should respond..."
+                      className="rounded border border-slate-300 px-2 py-1 font-mono text-[11px] leading-relaxed focus:border-blue-500 focus:outline-none"
+                    />
+                  </label>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="submit"
+                      disabled={isSavingAgent}
+                      className="rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                    >
+                      {isSavingAgent ? 'Saving...' : 'Save profile'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleToggleAgentCreation}
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+
               <div
                 ref={messagesContainerRef}
                 onScroll={handleMessagesScroll}
-                className="flex-1 overflow-y-auto"
+                className="mt-3 flex-1 overflow-y-auto rounded-md bg-slate-100/60 p-3"
               >
-                <div className="max-w-3xl mx-auto px-4 py-6">
-                  {messages
-                    .filter(message => message.role !== 'system')
-                    .map(message => (
-                      <article
-                        key={message.id}
-                        className={`mb-4 ${
-                          message.role === 'user' ? 'ml-auto' : ''
-                        } max-w-[85%]`}
-                      >
-                        <div className={`rounded-2xl px-4 py-3 ${
-                          message.role === 'user'
-                            ? 'bg-blue-600 text-white ml-auto'
-                            : 'bg-white border border-slate-200 text-slate-900'
-                        }`}>
-                          <div className="whitespace-pre-line leading-relaxed">
-                            {renderMessageContent(message.content)}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 px-2 text-[10px] text-slate-400">
-                          <span className="capitalize">{message.role}</span>
-                          {message.tokens !== undefined && (
-                            <span>• {message.tokens.toLocaleString()} tokens</span>
-                          )}
-                          <span suppressHydrationWarning>• {new Date(message.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                      </article>
-                    ))}
-                  <div ref={messagesEndRef} />
-                </div>
-              </div>
-
-              {/* Input Area - ChatGPT Style */}
-              <div className="border-t border-slate-200 bg-white p-4">
-                <div className="max-w-3xl mx-auto">
-                  <form onSubmit={handleSendMessage} className="flex gap-3">
-                    <input
-                      value={chatInput}
-                      onChange={event => setChatInput(event.target.value)}
-                      disabled={
-                        isSending ||
-                        !selectedModel ||
-                        !activeProvider?.available ||
-                        !agentPrompt ||
-                        !activeAgent
-                      }
-                      placeholder="Message..."
-                      className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 shadow-sm"
-                    />
-                    <button
-                      type="submit"
-                      disabled={
-                        isSendDisabled ||
-                        !activeProvider?.available ||
-                        !agentPrompt ||
-                        !activeAgent
-                      }
-                      className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 shadow-sm"
+                {messages
+                  .filter(message => message.role !== 'system')
+                  .map(message => (
+                    <article
+                      key={message.id}
+                      className={`mb-3 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm last:mb-0 ${
+                        message.role === 'user'
+                          ? 'border-blue-200 bg-blue-50/70'
+                          : 'border-emerald-200 bg-emerald-50/60'
+                      }`}
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                      </svg>
-                    </button>
-                  </form>
-                  {chatError && (
-                    <p className="mt-2 text-xs text-rose-600 text-center">{chatError}</p>
-                  )}
-                </div>
+                      <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+                        <span className="capitalize">{message.role}</span>
+                        <div className="flex items-center gap-2">
+                          {message.tokens !== undefined && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-mono">
+                              {message.tokens.toLocaleString()} tokens
+                            </span>
+                          )}
+                          <span suppressHydrationWarning>{new Date(message.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
+                      <div className="whitespace-pre-line leading-relaxed text-slate-800">
+                        {renderMessageContent(message.content)}
+                      </div>
+                    </article>
+                  ))}
+                <div ref={messagesEndRef} />
               </div>
+
+              <form onSubmit={handleSendMessage} className="mt-3 flex gap-2">
+                <input
+                  value={chatInput}
+                  onChange={event => setChatInput(event.target.value)}
+                  disabled={
+                    isSending ||
+                    !selectedModel ||
+                    !activeProvider?.available ||
+                    !agentPrompt ||
+                    !activeAgent
+                  }
+                  placeholder="Describe a groove, ask for a reharm, or outline a vibe..."
+                  className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                />
+                <button
+                  type="submit"
+                  disabled={
+                    isSendDisabled ||
+                    !activeProvider?.available ||
+                    !agentPrompt ||
+                    !activeAgent
+                  }
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                >
+                  {isSending ? 'Sending...' : 'Send'}
+                </button>
+              </form>
+              {chatError && (
+                <p className="mt-2 text-xs text-rose-600">{chatError}</p>
+              )}
           </section>
+
+          {/* Chord Diagram - Third */}
+          <section className="w-full rounded-2xl bg-white p-4 shadow-md sm:p-6">
+            <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
+          </section>
+        </section>
       </main>
-
-      {/* Modals */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        diagramRef={diagramRef}
-        bpm={bpm}
-        onBpmChange={setBpm}
-        octaveTranspose={octaveTranspose}
-        onOctaveTransposeChange={setOctaveTranspose}
-        transposeDisplay={transposeDisplay}
-        onTransposeDisplayChange={setTransposeDisplay}
-        relativeVelocity={relativeVelocity}
-        currentMedianVelocity={currentMedianVelocity}
-        onRelativeVelocityChange={handleRelativeVelocityChange}
-        providers={providers}
-        selectedProvider={selectedProvider}
-        onProviderChange={(provider) => {
-          setSelectedProvider(provider as ChatProvider);
-          const nextProviderOption = providers.find(option => option.id === provider);
-          if (nextProviderOption?.models.length) {
-            setSelectedModel(nextProviderOption.models[0].id);
-          } else {
-            setSelectedModel('');
-          }
-        }}
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
-        agentProfiles={agentProfiles}
-        selectedAgentId={selectedAgentId}
-        onAgentChange={setSelectedAgentId}
-        chatInstructions={chatInstructions}
-        onChatInstructionsChange={setChatInstructions}
-        isLoadingProviders={isLoadingProviders}
-        isLoadingAgents={isLoadingAgents}
-        providerError={providerError}
-        agentError={agentError}
-        isCreatingAgent={isCreatingAgent}
-        onToggleAgentCreation={handleToggleAgentCreation}
-        newAgentName={newAgentName}
-        onNewAgentNameChange={setNewAgentName}
-        newAgentPrompt={newAgentPrompt}
-        onNewAgentPromptChange={setNewAgentPrompt}
-        onCreateAgentSubmit={handleCreateAgentSubmit}
-        isSavingAgent={isSavingAgent}
-        isSending={isSending}
-        onSendSessionSummary={handleSendSessionSummary}
-      />
-
-      {/* Chord Matrix Modal */}
-      <ChordMatrixModal
-        isOpen={isChordMatrixOpen}
-        onClose={() => setIsChordMatrixOpen(false)}
-        diagramRef={diagramRef}
-        onChordTriggered={handleChordTriggered}
-      />
-
-      {/* Hidden ChordDiagram for MIDI playback */}
-      <div className="hidden">
-        <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
-      </div>
     </div>
   );
 }

@@ -1,5 +1,11 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
+// Web MIDI API types (using browser's built-in types)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MIDIAccess = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MIDIOutput = any;
+
 const NOTE_SEQUENCE = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
 const FLAT_TO_SHARP: Record<string, string> = {
   Db: 'C#',
@@ -75,8 +81,8 @@ export const useWebMidiChordSender = () => {
     []
   );
 
-  const midiAccessRef = useRef<WebMidi.MIDIAccess | null>(null);
-  const selectedOutputRef = useRef<WebMidi.MIDIOutput | null>(null);
+  const midiAccessRef = useRef<MIDIAccess | null>(null);
+  const selectedOutputRef = useRef<MIDIOutput | null>(null);
   const activeNotesRef = useRef<number[]>([]);
   const timersRef = useRef<number[]>([]);
 
@@ -102,7 +108,8 @@ export const useWebMidiChordSender = () => {
     if (!access) return;
 
     const nextOutputs: MidiOutputInfo[] = [];
-    access.outputs.forEach(output => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    access.outputs.forEach((output: any) => {
       nextOutputs.push({
         id: output.id,
         name: output.name ?? `Output ${nextOutputs.length + 1}`,

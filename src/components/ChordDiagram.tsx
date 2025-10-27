@@ -32,6 +32,18 @@ export interface ChordDiagramHandle {
     notes: Array<{ note: string; octave: number; startOffset: number; duration: number; velocity?: number }>,
     options?: { velocity?: number; velocityVariancePercent?: number }
   ) => void;
+  // MIDI controls
+  getMidiState: () => {
+    isSupported: boolean;
+    hasAccess: boolean;
+    outputs: Array<{ id: string; name: string; manufacturer?: string }>;
+    selectedOutputId: string | null;
+  };
+  requestMidiAccess: () => Promise<void>;
+  selectMidiOutput: (id: string | null) => void;
+  // Audio controls
+  getUseInternalAudio: () => boolean;
+  setUseInternalAudio: (enabled: boolean) => void;
 }
 
 export interface ChordDiagramProps {
@@ -442,7 +454,17 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
   useImperativeHandle(ref, () => ({
     playChordById,
     sendMidiNoteSequence,
-  }), [playChordById, sendMidiNoteSequence]);
+    getMidiState: () => ({
+      isSupported: isMidiSupported,
+      hasAccess: hasMidiAccess,
+      outputs: midiOutputs,
+      selectedOutputId,
+    }),
+    requestMidiAccess,
+    selectMidiOutput,
+    getUseInternalAudio: () => useInternalAudio,
+    setUseInternalAudio,
+  }), [playChordById, sendMidiNoteSequence, isMidiSupported, hasMidiAccess, midiOutputs, selectedOutputId, requestMidiAccess, selectMidiOutput, useInternalAudio, setUseInternalAudio]);
 
 return (
   <div className="flex h-full w-full flex-col bg-white text-gray-900">
@@ -456,38 +478,6 @@ return (
             {isPanelCollapsed ? 'Show' : 'Hide'}
           </button>
         </div>
-        {!isMidiSupported ? (
-          <p className="mt-1 text-xs text-red-500">Web MIDI not supported in this browser.</p>
-        ) : !hasMidiAccess ? (
-          <button
-            onClick={handleConnectMidi}
-            className="mt-2 w-full rounded-md bg-blue-600 px-3 py-1 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-          >
-            Connect MIDI
-          </button>
-        ) : (
-          <>
-            {midiOutputs.length === 0 ? (
-              <p className="mt-1 text-xs text-gray-500">No MIDI outputs detected.</p>
-            ) : (
-              <select
-                value={selectedOutputId ?? ''}
-                onChange={event => selectMidiOutput(event.target.value || null)}
-                className="mt-2 w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="">None (mute MIDI)</option>
-                {midiOutputs.map(output => (
-                  <option key={output.id} value={output.id}>
-                    {output.manufacturer ? `${output.manufacturer} — ${output.name}` : output.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </>
-        )}
-        {midiError && (
-          <p className="mt-1 text-xs text-red-500">{midiError}</p>
-        )}
         {!isPanelCollapsed && (
           <div className="mt-3 space-y-3 border-t border-gray-200 pt-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>

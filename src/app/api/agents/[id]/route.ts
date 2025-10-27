@@ -4,8 +4,9 @@ import { NextResponse } from 'next/server';
 
 const AGENTS_DIR = path.join(process.cwd(), 'agents');
 
-export async function GET(_: Request, context: { params: { id: string } }) {
-  const slug = context.params.id;
+export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
+  const slug = params.id;
   if (!slug) {
     return NextResponse.json({ error: 'Agent id is required.' }, { status: 400 });
   }

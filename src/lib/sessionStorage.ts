@@ -1,4 +1,4 @@
-import type { ChatMessage, ChordNotebookEntry } from '@/types/harmony';
+import type { ChatMessage, ChordNotebookEntry, ChordPlaybackControls } from '@/types/harmony';
 
 const DB_NAME = 'aichordSessions';
 const DB_VERSION = 1;
@@ -17,6 +17,7 @@ export interface SessionData {
   bpm: number;
   octaveTranspose: number;
   transposeDisplay: boolean;
+  controls: ChordPlaybackControls;
 }
 
 export interface SessionRecord {

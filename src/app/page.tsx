@@ -7,6 +7,16 @@ import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@
 import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
 import ChordMatrixModal from '@/components/ChordMatrixModal';
+import ConversationsDrawer from '@/components/ConversationsDrawer';
+import {
+  deleteSession,
+  getAllSessions,
+  getSession,
+  saveSession,
+  type SessionData,
+  type SessionRecord,
+} from '@/lib/sessionStorage';
+import type { ChordPlaybackControls } from '@/types/harmony';
 
 type ChatProvider = 'ollama' | 'openai';
 type ChordQuality = 'major' | 'minor' | 'dominant7' | 'major7' | 'minor7';
@@ -80,8 +90,73 @@ interface ParsedChord {
 const DEFAULT_PROVIDER: ChatProvider = 'ollama';
 const DEFAULT_NOTE_VELOCITY = 96;
 
+const DEFAULT_CHORD_CONTROLS: ChordPlaybackControls = {
+  noteDurationSeconds: 4,
+  baseOctave: 2,
+  velocity: 56,
+  velocityVariance: 10,
+  arpeggioIntervalMs: 1,
+  arpeggioTimingJitterPercent: 10,
+  useInternalAudio: true,
+};
+
+const createControlState = (overrides?: Partial<ChordPlaybackControls>): ChordPlaybackControls => ({
+  noteDurationSeconds: overrides?.noteDurationSeconds ?? DEFAULT_CHORD_CONTROLS.noteDurationSeconds,
+  baseOctave: overrides?.baseOctave ?? DEFAULT_CHORD_CONTROLS.baseOctave,
+  velocity: overrides?.velocity ?? DEFAULT_CHORD_CONTROLS.velocity,
+  velocityVariance: overrides?.velocityVariance ?? DEFAULT_CHORD_CONTROLS.velocityVariance,
+  arpeggioIntervalMs: overrides?.arpeggioIntervalMs ?? DEFAULT_CHORD_CONTROLS.arpeggioIntervalMs,
+  arpeggioTimingJitterPercent:
+    overrides?.arpeggioTimingJitterPercent ?? DEFAULT_CHORD_CONTROLS.arpeggioTimingJitterPercent,
+  useInternalAudio: overrides?.useInternalAudio ?? DEFAULT_CHORD_CONTROLS.useInternalAudio,
+});
+
+const controlsEqual = (a: ChordPlaybackControls, b: ChordPlaybackControls): boolean =>
+  a.noteDurationSeconds === b.noteDurationSeconds &&
+  a.baseOctave === b.baseOctave &&
+  a.velocity === b.velocity &&
+  a.velocityVariance === b.velocityVariance &&
+  a.arpeggioIntervalMs === b.arpeggioIntervalMs &&
+  a.arpeggioTimingJitterPercent === b.arpeggioTimingJitterPercent &&
+  a.useInternalAudio === b.useInternalAudio;
+
 const createId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const DEFAULT_SESSION_NAME = 'New Session';
+
+const createDefaultMessages = (): ChatMessage[] => [];
+
+const createDefaultSessionData = (): SessionData => ({
+  messages: createDefaultMessages(),
+  chordNotebook: [],
+  chatInstructions: '',
+  selectedAgentId: '',
+  selectedModel: '',
+  selectedProvider: DEFAULT_PROVIDER,
+  relativeVelocity: 45,
+  bpm: 120,
+  octaveTranspose: 0,
+  transposeDisplay: false,
+  controls: createControlState(),
+});
+
+const deriveSessionNameFromMessages = (messages: ChatMessage[]): string | null => {
+  const firstUserMessage = messages.find(message => message.role === 'user' && message.content.trim().length > 0);
+  if (!firstUserMessage) {
+    return null;
+  }
+
+  const primaryLine = firstUserMessage.content.trim().split('\n')[0] ?? '';
+  if (!primaryLine) {
+    return null;
+  }
+
+  const trimmed = primaryLine.slice(0, 60);
+  return trimmed.length < primaryLine.length ? `${trimmed}…` : trimmed;
+};
+
+const isChordPlaybackMessage = (message: ChatMessage): boolean =>
+  message.role === 'system' && message.content.startsWith('🎵 Played');
 
 
 const ChordDiagram = dynamic(
@@ -95,14 +170,22 @@ export default function Home() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const userIsAtBottomRef = useRef(true);
   const suppressNotebookAppendRef = useRef(false);
+  const initialSessionRef = useRef<SessionData | null>(null);
+  if (!initialSessionRef.current) {
+    initialSessionRef.current = createDefaultSessionData();
+  }
   const [isConfigCollapsed, setIsConfigCollapsed] = useState(true);
   const [providers, setProviders] = useState<ChatProviderOption[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<ChatProvider>(DEFAULT_PROVIDER);
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState<ChatProvider>(
+    (initialSessionRef.current?.selectedProvider as ChatProvider) ?? DEFAULT_PROVIDER
+  );
+  const [selectedModel, setSelectedModel] = useState(initialSessionRef.current?.selectedModel ?? '');
+  const selectedProviderRef = useRef(selectedProvider);
+  const selectedModelRef = useRef(selectedModel);
   const [isLoadingProviders, setIsLoadingProviders] = useState(true);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState(initialSessionRef.current?.selectedAgentId ?? '');
   const [agentPrompt, setAgentPrompt] = useState('');
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -112,34 +195,403 @@ export default function Home() {
   const [isSavingAgent, setIsSavingAgent] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [chatInstructions, setChatInstructions] = useState('');
+  const [chatInstructions, setChatInstructions] = useState(initialSessionRef.current?.chatInstructions ?? '');
   const [chatInput, setChatInput] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    {
-      id: createId(),
-      role: 'assistant',
-      content: "Hi! I'm your harmonic co-pilot. Play chords on the graph and I'll keep track so we can workshop progressions together.",
-      timestamp: Date.now(),
-    },
-  ]);
-  const [chordNotebook, setChordNotebook] = useState<ChordNotebookEntry[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => initialSessionRef.current?.messages ?? createDefaultMessages()
+  );
+  const [chordNotebook, setChordNotebook] = useState<ChordNotebookEntry[]>(
+    () => initialSessionRef.current?.chordNotebook ?? []
+  );
+  const [diagramControls, setDiagramControls] = useState<ChordPlaybackControls>(() =>
+    createControlState(initialSessionRef.current?.controls)
+  );
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
   const [editMeasuresInput, setEditMeasuresInput] = useState('1');
   const [isPlayingSequence, setIsPlayingSequence] = useState(false);
   const [expandedChordId, setExpandedChordId] = useState<string | null>(null);
-  const [bpm, setBpm] = useState<number>(120); // Beats per minute
+  const [bpm, setBpm] = useState<number>(initialSessionRef.current?.bpm ?? 120); // Beats per minute
   const [currentPlaybackBeat, setCurrentPlaybackBeat] = useState<number | null>(null); // Continuous playback position
   const musicSheetRef = useRef<HTMLDivElement>(null);
   const sequenceAbortRef = useRef<boolean>(false);
   const playbackStartTimeRef = useRef<number | null>(null);
   const playbackAnimationRef = useRef<number | null>(null);
-  const [octaveTranspose, setOctaveTranspose] = useState<number>(0); // Octave transposition (-2 to +2)
-  const [transposeDisplay, setTransposeDisplay] = useState<boolean>(false); // If true, also transpose the display (default: transpose sound only)
+  const [octaveTranspose, setOctaveTranspose] = useState<number>(initialSessionRef.current?.octaveTranspose ?? 0); // Octave transposition (-2 to +2)
+  const [transposeDisplay, setTransposeDisplay] = useState<boolean>(initialSessionRef.current?.transposeDisplay ?? false); // If true, also transpose the display (default: transpose sound only)
   const [draggingChordIndex, setDraggingChordIndex] = useState<number | null>(null);
-  const [relativeVelocity, setRelativeVelocity] = useState<number>(45); // Target relative velocity (default 45)
+  const [relativeVelocity, setRelativeVelocity] = useState<number>(initialSessionRef.current?.relativeVelocity ?? 45); // Target relative velocity (default 45)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChordMatrixOpen, setIsChordMatrixOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionName, setSessionName] = useState<string>(DEFAULT_SESSION_NAME);
+  const [isConversationsOpen, setIsConversationsOpen] = useState(false);
+  const hasCustomSessionNameRef = useRef(false);
+  const isHydratingSessionRef = useRef(false);
+  const hydrationTimeoutRef = useRef<number | null>(null);
+  const sessionMetaRef = useRef<{ createdAt: number; updatedAt: number }>({
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const hasLoadedSessionsRef = useRef(false);
+
+  const applySessionData = useCallback(
+    (data?: SessionData) => {
+      const defaults = createDefaultSessionData();
+      const payload = data
+        ? {
+            ...defaults,
+            ...data,
+            messages: data.messages && data.messages.length > 0 ? data.messages : defaults.messages,
+          }
+        : defaults;
+
+      const sanitizedMessages =
+        payload.messages?.filter(message => !isChordPlaybackMessage(message)) ?? [];
+      const normalizedMessages =
+        sanitizedMessages.length > 0 ? sanitizedMessages : createDefaultMessages();
+
+      const hydratedMessages = normalizedMessages.map(message => ({ ...message }));
+      const hydratedNotebook = (payload.chordNotebook ?? []).map(entry => ({
+        ...entry,
+        chord: { ...entry.chord },
+        noteSequence: entry.noteSequence ? entry.noteSequence.map(note => ({ ...note })) : undefined,
+      }));
+
+      setMessages(hydratedMessages);
+      setChordNotebook(hydratedNotebook);
+      setChatInstructions(payload.chatInstructions ?? '');
+      const candidateProvider = (payload.selectedProvider as ChatProvider) ?? DEFAULT_PROVIDER;
+      const safeProvider = candidateProvider === 'openai' || candidateProvider === 'ollama' ? candidateProvider : DEFAULT_PROVIDER;
+      setSelectedProvider(safeProvider);
+      setSelectedModel(payload.selectedModel ?? '');
+      setSelectedAgentId(payload.selectedAgentId ?? '');
+      setRelativeVelocity(payload.relativeVelocity ?? defaults.relativeVelocity);
+      setBpm(payload.bpm ?? defaults.bpm);
+      setOctaveTranspose(payload.octaveTranspose ?? defaults.octaveTranspose);
+      setTransposeDisplay(payload.transposeDisplay ?? defaults.transposeDisplay);
+      setDiagramControls(createControlState(payload.controls));
+    },
+    [
+      setMessages,
+      setChordNotebook,
+      setChatInstructions,
+      setSelectedProvider,
+      setSelectedModel,
+      setSelectedAgentId,
+      setRelativeVelocity,
+      setBpm,
+      setOctaveTranspose,
+      setTransposeDisplay,
+      setDiagramControls,
+    ]
+  );
+
+  const releaseHydrationLock = useCallback(() => {
+    if (hydrationTimeoutRef.current !== null) {
+      window.clearTimeout(hydrationTimeoutRef.current);
+    }
+    hydrationTimeoutRef.current = window.setTimeout(() => {
+      isHydratingSessionRef.current = false;
+      hydrationTimeoutRef.current = null;
+    }, 0);
+  }, []);
+
+  const loadSession = useCallback(
+    (record: SessionRecord) => {
+      hasLoadedSessionsRef.current = true;
+      isHydratingSessionRef.current = true;
+      setActiveSessionId(record.id);
+      setSessionName(record.name || DEFAULT_SESSION_NAME);
+      hasCustomSessionNameRef.current =
+        !!record.name && record.name.trim().length > 0 && record.name !== DEFAULT_SESSION_NAME;
+      sessionMetaRef.current = {
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      };
+      applySessionData(record.data);
+      releaseHydrationLock();
+    },
+    [applySessionData, releaseHydrationLock]
+  );
+
+  const buildBlankSessionData = useCallback((): SessionData => {
+    const providerOption = providers.find(option => option.id === selectedProvider);
+    const fallbackProvider =
+      providerOption ??
+      providers.find(option => option.available && option.models.length > 0) ??
+      providers[0] ??
+      null;
+    const providerId =
+      (fallbackProvider?.id as ChatProvider | undefined) ?? DEFAULT_PROVIDER;
+    const providerModels = fallbackProvider?.models ?? [];
+    const modelId =
+      (selectedModel && providerModels.some(model => model.id === selectedModel))
+        ? selectedModel
+        : providerModels[0]?.id ?? '';
+
+    const agentOption = agentProfiles.find(agent => agent.id === selectedAgentId);
+    const fallbackAgent = agentOption ?? agentProfiles[0] ?? null;
+    const agentId = fallbackAgent?.id ?? '';
+
+    return {
+      ...createDefaultSessionData(),
+      selectedProvider: providerId,
+      selectedModel: modelId,
+      selectedAgentId: agentId,
+      chatInstructions,
+      relativeVelocity,
+      bpm,
+      octaveTranspose,
+      transposeDisplay,
+      controls: createControlState(diagramControls),
+    };
+  }, [
+    providers,
+    selectedProvider,
+    selectedModel,
+    agentProfiles,
+    selectedAgentId,
+    chatInstructions,
+    relativeVelocity,
+    bpm,
+    octaveTranspose,
+    transposeDisplay,
+    diagramControls,
+  ]);
+
+  const createAndActivateSession = useCallback((): SessionRecord => {
+    const now = Date.now();
+    const freshData = buildBlankSessionData();
+    const record: SessionRecord = {
+      id: createId(),
+      name: DEFAULT_SESSION_NAME,
+      createdAt: now,
+      updatedAt: now,
+      data: freshData,
+    };
+
+    hasCustomSessionNameRef.current = false;
+    setSessionName(DEFAULT_SESSION_NAME);
+    sessionMetaRef.current = { createdAt: now, updatedAt: now };
+    isHydratingSessionRef.current = true;
+    setActiveSessionId(record.id);
+    applySessionData(freshData);
+    setSessions(prev => {
+      if (prev.some(session => session.id === record.id)) {
+        return prev;
+      }
+      return [record, ...prev];
+    });
+    hasLoadedSessionsRef.current = true;
+    releaseHydrationLock();
+    return record;
+  }, [applySessionData, releaseHydrationLock, buildBlankSessionData]);
+
+  const handleCreateSession = useCallback(() => {
+    createAndActivateSession();
+    setIsConversationsOpen(false);
+  }, [createAndActivateSession]);
+
+  const handleSelectSession = useCallback(
+    async (sessionId: string) => {
+      if (sessionId === activeSessionId) {
+        setIsConversationsOpen(false);
+        return;
+      }
+
+      try {
+        const existing = sessions.find(session => session.id === sessionId);
+        if (existing) {
+          loadSession(existing);
+        } else {
+          const fetched = await getSession(sessionId);
+          if (fetched) {
+            setSessions(prev => {
+              const others = prev.filter(session => session.id !== fetched.id);
+              return [fetched, ...others];
+            });
+            loadSession(fetched);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load conversation', error);
+      } finally {
+        setIsConversationsOpen(false);
+      }
+    },
+    [activeSessionId, sessions, loadSession]
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await deleteSession(sessionId);
+      } catch (error) {
+        console.error('Failed to delete conversation', error);
+      }
+
+      const remaining = sessions.filter(session => session.id !== sessionId);
+      setSessions(remaining);
+
+      if (activeSessionId === sessionId) {
+        if (remaining.length > 0) {
+          loadSession(remaining[0]);
+        } else {
+          createAndActivateSession();
+        }
+      }
+    },
+    [activeSessionId, sessions, loadSession, createAndActivateSession]
+  );
+
+  const handleClearCurrentSession = useCallback(() => {
+    if (!activeSessionId) {
+      return;
+    }
+    const freshData = buildBlankSessionData();
+    hasCustomSessionNameRef.current = false;
+    setSessionName(DEFAULT_SESSION_NAME);
+    isHydratingSessionRef.current = true;
+    applySessionData(freshData);
+    releaseHydrationLock();
+  }, [activeSessionId, applySessionData, releaseHydrationLock, buildBlankSessionData]);
+
+  const handleDiagramControlsChange = useCallback((controls: ChordPlaybackControls) => {
+    setDiagramControls(prev => (controlsEqual(prev, controls) ? prev : controls));
+  }, []);
+
+  const buildSessionRecord = useCallback((): SessionRecord | null => {
+    if (!activeSessionId) {
+      return null;
+    }
+
+    const now = Date.now();
+    const trimmedName = sessionName.trim() || DEFAULT_SESSION_NAME;
+
+    const sourceMessages = messages.length > 0 ? messages : createDefaultMessages();
+    const sanitizedMessages = sourceMessages.filter(message => !isChordPlaybackMessage(message));
+    const finalMessages = sanitizedMessages.length > 0 ? sanitizedMessages : createDefaultMessages();
+
+    const recordData: SessionData = {
+      messages: finalMessages.map(message => ({ ...message })),
+      chordNotebook: chordNotebook.map(entry => ({
+        ...entry,
+        chord: { ...entry.chord },
+        noteSequence: entry.noteSequence ? entry.noteSequence.map(note => ({ ...note })) : undefined,
+      })),
+      chatInstructions,
+      selectedAgentId,
+      selectedModel,
+      selectedProvider,
+      relativeVelocity,
+      bpm,
+      octaveTranspose,
+      transposeDisplay,
+      controls: createControlState(diagramControls),
+    };
+
+    return {
+      id: activeSessionId,
+      name: trimmedName,
+      createdAt: sessionMetaRef.current.createdAt,
+      updatedAt: now,
+      data: recordData,
+    };
+  }, [
+    activeSessionId,
+    sessionName,
+    messages,
+    chordNotebook,
+    chatInstructions,
+    selectedAgentId,
+    selectedModel,
+    selectedProvider,
+    relativeVelocity,
+    bpm,
+    octaveTranspose,
+    transposeDisplay,
+    diagramControls,
+  ]);
+
+  useEffect(() => {
+    if (hasLoadedSessionsRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      if (hasLoadedSessionsRef.current) return;
+      try {
+        const stored = await getAllSessions();
+        if (cancelled) return;
+
+        if (stored.length > 0) {
+          setSessions(stored);
+          loadSession(stored[0]);
+        } else {
+          createAndActivateSession();
+        }
+      } catch (error) {
+        console.error('Failed to load conversations', error);
+        if (!cancelled) {
+          createAndActivateSession();
+        }
+      } finally {
+        if (!cancelled) {
+          hasLoadedSessionsRef.current = true;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [createAndActivateSession, loadSession]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (isHydratingSessionRef.current) return;
+    if (hasCustomSessionNameRef.current) return;
+
+    const derived = deriveSessionNameFromMessages(messages);
+    if (derived && derived !== sessionName) {
+      setSessionName(derived);
+    }
+  }, [messages, activeSessionId, sessionName]);
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return;
+    }
+    if (isHydratingSessionRef.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const record = buildSessionRecord();
+      if (!record) {
+        return;
+      }
+      sessionMetaRef.current.updatedAt = record.updatedAt;
+      saveSession(record)
+        .then(() => {
+          setSessions(prev => {
+            const others = prev.filter(session => session.id !== record.id);
+            return [record, ...others].sort((a, b) => b.updatedAt - a.updatedAt);
+          });
+        })
+        .catch(error => {
+          console.error('Failed to save conversation', error);
+        });
+    }, 400);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeSessionId, buildSessionRecord]);
 
   const clampVelocity = useCallback((value: number) => Math.max(1, Math.min(127, value)), []);
 
@@ -251,7 +703,14 @@ export default function Home() {
           data.providers.find(option => option.models.length > 0) ??
           null;
 
-        if (firstAvailable) {
+        const currentProviderOption = data.providers.find(option => option.id === selectedProviderRef.current);
+
+        if (currentProviderOption) {
+          const hasCurrentModel = currentProviderOption.models.some(model => model.id === selectedModelRef.current);
+          if (!hasCurrentModel) {
+            setSelectedModel(currentProviderOption.models[0]?.id ?? '');
+          }
+        } else if (firstAvailable) {
           setSelectedProvider(firstAvailable.id);
           setSelectedModel(firstAvailable.models[0]?.id ?? '');
         } else {
@@ -397,6 +856,8 @@ export default function Home() {
   );
 
   const modelOptions = activeProvider?.models ?? [];
+  selectedProviderRef.current = selectedProvider;
+  selectedModelRef.current = selectedModel;
   const isSendDisabled =
     isSending || !chatInput.trim() || !selectedModel || !agentPrompt || !activeAgent;
 
@@ -625,24 +1086,17 @@ export default function Home() {
     [activeAgent, agentPrompt, appendMessage, chatInstructions, chordNotebook, selectedModel, selectedProvider]
   );
 
-  const handleChordTriggered = useCallback((event: ChordTriggerEvent) => {
-    const friendlyQuality = event.type.replace(/([A-Z])/g, ' $1').toLowerCase();
-    const chordMessage: ChatMessage = {
-      id: createId(),
-      role: 'system',
-      content: `🎵 Played ${event.label} — ${friendlyQuality.trim()}`,
-      chord: event,
-      timestamp: Date.now(),
-    };
-    appendMessage(chordMessage);
+  const handleChordTriggered = useCallback(
+    (event: ChordTriggerEvent) => {
+      if (suppressNotebookAppendRef.current) {
+        suppressNotebookAppendRef.current = false;
+        return;
+      }
 
-    if (suppressNotebookAppendRef.current) {
-      suppressNotebookAppendRef.current = false;
-      return;
-    }
-
-    handleAddChordToNotebook(event);
-  }, [appendMessage, handleAddChordToNotebook]);
+      handleAddChordToNotebook(event);
+    },
+    [handleAddChordToNotebook]
+  );
 
   const handleProviderChange = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
@@ -1125,6 +1579,7 @@ export default function Home() {
     <div className="min-h-screen bg-slate-50 flex">
       {/* Sidebar */}
       <Sidebar
+        onConversationsClick={() => setIsConversationsOpen(prev => !prev)}
         onChordMatrixClick={() => setIsChordMatrixOpen(true)}
         onSettingsClick={() => setIsSettingsOpen(true)}
       />
@@ -1135,34 +1590,38 @@ export default function Home() {
         {/* Music Sheet - Fixed at top */}
         <section className="bg-white border-b border-slate-200 shadow-sm w-full">
           <div className="w-full py-4">
-            <div className="flex items-center justify-between gap-4 mb-4 px-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-4 px-4">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-semibold text-slate-900">Music Sheet</h2>
-                <span className="text-[10px] font-medium text-slate-500 px-2 py-0.5 rounded bg-slate-200">4/4 Time</span>
+                <input
+                  type="text"
+                  value={sessionName}
+                  onChange={event => setSessionName(event.target.value)}
+                  onBlur={() => {
+                    if (!sessionName.trim()) {
+                      setSessionName(DEFAULT_SESSION_NAME);
+                      hasCustomSessionNameRef.current = false;
+                    } else {
+                      hasCustomSessionNameRef.current = true;
+                    }
+                  }}
+                  className="w-full max-w-xs rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-medium text-slate-700 shadow-sm focus:border-slate-500 focus:outline-none"
+                  placeholder="Session name"
+                />
               </div>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => handleAddSilence(1)}
-                  className="rounded-md bg-slate-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-600"
+                  className="rounded-md bg-slate-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-600"
                   title="Add 1 measure rest"
                 >
                   + Rest
                 </button>
-                {chordNotebook.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleClearAll}
-                    className="rounded-md bg-slate-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-700"
-                  >
-                    Clear All
-                  </button>
-                )}
                 {isPlayingSequence ? (
                   <button
                     type="button"
                     onClick={handleStopSequence}
-                    className="rounded-md bg-red-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-red-700"
+                    className="rounded-md bg-red-600 px-5 py-2 text-xs font-semibold text-white transition hover:bg-red-700"
                   >
                     ⏹ Stop
                   </button>
@@ -1171,9 +1630,18 @@ export default function Home() {
                     type="button"
                     onClick={handlePlaySequence}
                     disabled={chordNotebook.length === 0}
-                    className="rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="rounded-md bg-emerald-600 px-5 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
                     ▶ Play
+                  </button>
+                )}
+                {chordNotebook.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAll}
+                    className="rounded-md bg-slate-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-700"
+                  >
+                    Clear All
                   </button>
                 )}
               </div>
@@ -1224,6 +1692,14 @@ export default function Home() {
                       // Map note to staff position (treble clef)
                       // Staff lines from bottom to top: E4, G4, B4, D5, F5
                       // Spaces from bottom to top: F4, A4, C5, E5
+                      const FLAT_TO_SHARP: Record<string, string> = {
+                        Db: 'C#',
+                        Eb: 'D#',
+                        Gb: 'F#',
+                        Ab: 'G#',
+                        Bb: 'A#',
+                      };
+
                       const getNotePosition = (note: string, octave: number): number => {
                         // Map each note to its position on treble staff (for octave 4)
                         // Position 0 = E4 (bottom line), increases going up
@@ -1242,14 +1718,28 @@ export default function Home() {
                           'B': 4,    // B4 third line
                         };
 
-                        const basePos = notePositions[note] ?? 0;
+                        const canonicalNote = note.length > 1
+                          ? `${note[0]?.toUpperCase() ?? ''}${note.slice(1)}`
+                          : note.toUpperCase();
+                        const normalized = notePositions[canonicalNote] !== undefined
+                          ? canonicalNote
+                          : FLAT_TO_SHARP[canonicalNote] ?? canonicalNote;
+                        const basePos = notePositions[normalized] ?? 0;
                         // Adjust for octave (each octave = 7 positions)
                         const octaveOffset = (octave - 4) * 7;
                         return basePos + octaveOffset;
                       };
 
                       // Staff lines (5 lines)
-                      const staffLinePositions = [0, 1, 2, 3, 4];
+                      const STAFF_LINE_COUNT = 5;
+                      const LINE_SPACING = 10; // pixels between lines
+                      const HALF_STEP = LINE_SPACING / 2;
+                      const STAFF_BOTTOM_Y = 94;
+                      const STAFF_TOP_Y = STAFF_BOTTOM_Y - (STAFF_LINE_COUNT - 1) * LINE_SPACING;
+                      const staffLinePositions = Array.from(
+                        { length: STAFF_LINE_COUNT },
+                        (_, idx) => STAFF_BOTTOM_Y - idx * LINE_SPACING
+                      );
 
                       // Calculate total width and measure boundaries
                       const beatSpacing = 30; // pixels per beat
@@ -1342,14 +1832,14 @@ export default function Home() {
                           <div className="relative" style={{ minWidth: '800px', height: '120px' }}>
                             {/* Staff lines */}
                             <div className="relative" style={{ height: '120px' }}>
-                              {staffLinePositions.map((_, idx) => (
+                              {staffLinePositions.map((lineY, idx) => (
                                 <div
                                   key={idx}
                                   className="absolute border-t border-slate-400"
                                   style={{
-                                    top: `${54 + idx * 10}px`,
+                                    top: `${lineY}px`,
                                     left: 0,
-                                    width: '750px'
+                                  width: '100%'
                                   }}
                                 />
                               ))}
@@ -1362,15 +1852,15 @@ export default function Home() {
                         <div className="relative" style={{ minWidth: `${totalWidth}px` }}>
                           {/* Staff lines - extended across all notes */}
                           <div className="relative" style={{ height: '120px' }}>
-                            {staffLinePositions.map((_, idx) => (
+                            {staffLinePositions.map((lineY, idx) => (
                               <div
                                 key={idx}
                                 className="absolute border-t border-slate-400"
                                 style={{
-                                  top: `${54 + idx * 10}px`,
+                                  top: `${lineY}px`,
                                   left: 0,
                                   right: 0,
-                                  width: `${totalWidth - 50}px`
+                                  width: '100%'
                                 }}
                               />
                             ))}
@@ -1381,9 +1871,9 @@ export default function Home() {
                                 key={`bar-${idx}`}
                                 className="absolute border-l-2 border-slate-600"
                                 style={{
-                                  top: '54px',
+                                  top: `${STAFF_TOP_Y}px`,
                                   left: `${beatPosition * beatSpacing}px`,
-                                  height: '40px',
+                                  height: `${STAFF_BOTTOM_Y - STAFF_TOP_Y}px`,
                                 }}
                               />
                             ))}
@@ -1444,9 +1934,8 @@ export default function Home() {
                                 const xPosition = note.beat * beatSpacing;
 
                                 const position = getNotePosition(note.note, note.octave);
-                                // Middle line (B4) = position 4 = 74px
-                                // Each step up = -5px (half of 10px line spacing)
-                                const yPos = 74 - position * 5;
+                                // Middle line (B4) corresponds to position 4; each step raises the note by half a line.
+                                const yPos = STAFF_BOTTOM_Y - position * HALF_STEP;
 
                                 return (
                                   <div key={noteIdx} className="absolute" style={{ left: `${xPosition}px` }} data-note-beat={note.beat}>
@@ -1454,28 +1943,36 @@ export default function Home() {
                                     {renderNoteSymbol(note.duration, yPos, 0, isPlaying)}
 
                                     {/* Ledger lines for notes outside staff */}
-                                    {yPos < 54 && Array.from({ length: Math.ceil((54 - yPos) / 10) }, (_, i) => (
-                                      <div
-                                        key={`ledger-above-${i}`}
-                                        className="absolute border-t border-slate-400"
-                                        style={{
-                                          top: `${54 - (i + 1) * 10}px`,
-                                          left: '-4px',
-                                          width: '20px',
-                                        }}
-                                      />
-                                    ))}
-                                    {yPos > 94 && Array.from({ length: Math.ceil((yPos - 94) / 10) }, (_, i) => (
-                                      <div
-                                        key={`ledger-below-${i}`}
-                                        className="absolute border-t border-slate-400"
-                                        style={{
-                                          top: `${94 + (i + 1) * 10}px`,
-                                          left: '-4px',
-                                          width: '20px',
-                                        }}
-                                      />
-                                    ))}
+                                    {yPos < STAFF_TOP_Y &&
+                                      Array.from(
+                                        { length: Math.ceil((STAFF_TOP_Y - yPos) / LINE_SPACING) },
+                                        (_, i) => (
+                                          <div
+                                            key={`ledger-above-${i}`}
+                                            className="absolute border-t border-slate-400"
+                                            style={{
+                                              top: `${STAFF_TOP_Y - (i + 1) * LINE_SPACING}px`,
+                                              left: '-4px',
+                                              width: '20px',
+                                            }}
+                                          />
+                                        )
+                                      )}
+                                    {yPos > STAFF_BOTTOM_Y &&
+                                      Array.from(
+                                        { length: Math.ceil((yPos - STAFF_BOTTOM_Y) / LINE_SPACING) },
+                                        (_, i) => (
+                                          <div
+                                            key={`ledger-below-${i}`}
+                                            className="absolute border-t border-slate-400"
+                                            style={{
+                                              top: `${STAFF_BOTTOM_Y + (i + 1) * LINE_SPACING}px`,
+                                              left: '-4px',
+                                              width: '20px',
+                                            }}
+                                          />
+                                        )
+                                      )}
                                   </div>
                                 );
                               })}
@@ -1560,9 +2057,9 @@ export default function Home() {
                         </div>
                       );
                     })()}
-                  </div>
+          </div>
 
-                {/* Chord Edit Panel - appears when a chord name is clicked */}
+        {/* Chord Edit Panel - appears when a chord name is clicked */}
                 {expandedChordId && (() => {
                   const expandedEntry = chordNotebook.find(e => e.entryId === expandedChordId);
                   if (!expandedEntry || !expandedEntry.noteSequence) return null;
@@ -1833,92 +2330,92 @@ export default function Home() {
 
           {/* Creative Chat - Fills 100% of remaining screen */}
           <section className="flex-1 flex flex-col bg-slate-50 min-h-0">
-              {/* Header with agent info - subtle like ChatGPT */}
-              <div className="flex items-center justify-center border-b border-slate-200 bg-white px-4 py-3">
-                {activeAgent && selectedModel && (
-                  <span className="text-xs text-slate-500">
-                    {activeAgent.label} • {modelOptions.find(m => m.id === selectedModel)?.label ?? selectedModel}
-                  </span>
+            <div className="border-b border-slate-200 bg-white px-4 py-3" aria-hidden />
+
+            <div
+              ref={messagesContainerRef}
+              onScroll={handleMessagesScroll}
+              className="flex-1 overflow-y-auto"
+            >
+              <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+                {messages.map(message => {
+                  const roleStyles =
+                    message.role === 'assistant'
+                      ? 'bg-white text-slate-900 border border-slate-200'
+                      : message.role === 'user'
+                        ? 'bg-slate-50 text-slate-900 border border-slate-200'
+                        : 'bg-slate-100 text-slate-600 border border-slate-200';
+                  const textClass =
+                    message.role === 'system' ? 'text-slate-600 italic' : 'text-slate-900';
+
+                  return (
+                    <article key={message.id} className="w-full">
+                      <div className={`w-full rounded-xl px-5 py-4 shadow-sm ${roleStyles}`}>
+                        <div className={`whitespace-pre-line leading-relaxed ${textClass}`}>
+                          {renderMessageContent(message.content)}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                        <span className="capitalize">{message.role}</span>
+                        {message.tokens !== undefined && (
+                          <span>• {message.tokens.toLocaleString()} tokens</span>
+                        )}
+                        <span suppressHydrationWarning>
+                          • {new Date(message.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    </article>
+                  );
+                })}
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {/* Chat input */}
+            <div className="border-t border-slate-200 bg-white p-4">
+              <div className="max-w-3xl mx-auto">
+                <form onSubmit={handleSendMessage} className="flex gap-3">
+                  <input
+                    value={chatInput}
+                    onChange={event => setChatInput(event.target.value)}
+                    disabled={isSending}
+                    placeholder="Message the agent..."
+                    className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 shadow-sm"
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      isSendDisabled ||
+                      !activeProvider?.available ||
+                      !agentPrompt ||
+                      !activeAgent
+                    }
+                    className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 shadow-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                  </button>
+                </form>
+                {chatError && (
+                  <p className="mt-2 text-xs text-rose-600 text-center">{chatError}</p>
                 )}
               </div>
+            </div>
 
-              {/* Messages Container - ChatGPT Style */}
-              <div
-                ref={messagesContainerRef}
-                onScroll={handleMessagesScroll}
-                className="flex-1 overflow-y-auto"
-              >
-                <div className="max-w-3xl mx-auto px-4 py-6">
-                  {messages
-                    .filter(message => message.role !== 'system')
-                    .map(message => (
-                      <article
-                        key={message.id}
-                        className={`mb-4 ${
-                          message.role === 'user' ? 'ml-auto' : ''
-                        } max-w-[85%]`}
-                      >
-                        <div className={`rounded-2xl px-4 py-3 ${
-                          message.role === 'user'
-                            ? 'bg-blue-600 text-white ml-auto'
-                            : 'bg-white border border-slate-200 text-slate-900'
-                        }`}>
-                          <div className="whitespace-pre-line leading-relaxed">
-                            {renderMessageContent(message.content)}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 px-2 text-[10px] text-slate-400">
-                          <span className="capitalize">{message.role}</span>
-                          {message.tokens !== undefined && (
-                            <span>• {message.tokens.toLocaleString()} tokens</span>
-                          )}
-                          <span suppressHydrationWarning>• {new Date(message.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                      </article>
-                    ))}
-                  <div ref={messagesEndRef} />
-                </div>
-              </div>
-
-              {/* Input Area - ChatGPT Style */}
-              <div className="border-t border-slate-200 bg-white p-4">
-                <div className="max-w-3xl mx-auto">
-                  <form onSubmit={handleSendMessage} className="flex gap-3">
-                    <input
-                      value={chatInput}
-                      onChange={event => setChatInput(event.target.value)}
-                      disabled={
-                        isSending ||
-                        !selectedModel ||
-                        !activeProvider?.available ||
-                        !agentPrompt ||
-                        !activeAgent
-                      }
-                      placeholder="Message..."
-                      className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 shadow-sm"
-                    />
-                    <button
-                      type="submit"
-                      disabled={
-                        isSendDisabled ||
-                        !activeProvider?.available ||
-                        !agentPrompt ||
-                        !activeAgent
-                      }
-                      className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 shadow-sm"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                      </svg>
-                    </button>
-                  </form>
-                  {chatError && (
-                    <p className="mt-2 text-xs text-rose-600 text-center">{chatError}</p>
-                  )}
-                </div>
-              </div>
-          </section>
+      </section>
       </main>
+
+      <ConversationsDrawer
+        isOpen={isConversationsOpen}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onCreateSession={handleCreateSession}
+        onDeleteSession={handleDeleteSession}
+        onClearCurrentSession={handleClearCurrentSession}
+        onClose={() => setIsConversationsOpen(false)}
+      />
 
       {/* Modals */}
       <SettingsModal
@@ -1973,7 +2470,12 @@ export default function Home() {
         isOpen={isChordMatrixOpen}
         onClose={() => setIsChordMatrixOpen(false)}
       >
-        <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
+        <ChordDiagram
+          ref={diagramRef}
+          onChordTriggered={handleChordTriggered}
+          initialControls={diagramControls}
+          onControlsChange={handleDiagramControlsChange}
+        />
       </ChordMatrixModal>
     </div>
   );

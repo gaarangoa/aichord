@@ -66,6 +66,16 @@ export interface ChatMessage {
   tokens?: number; // Token count for this message
 }
 
+export interface ChordPlaybackControls {
+  noteDurationSeconds: number;
+  baseOctave: number;
+  velocity: number;
+  velocityVariance: number;
+  arpeggioIntervalMs: number;
+  arpeggioTimingJitterPercent: number;
+  useInternalAudio: boolean;
+}
+
 export type NoteDuration =
   | 'whole'
   | 'half'

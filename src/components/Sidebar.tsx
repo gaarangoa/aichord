@@ -3,15 +3,45 @@
 import { useState } from 'react';
 
 interface SidebarProps {
+  onConversationsClick: () => void;
   onChordMatrixClick: () => void;
   onSettingsClick: () => void;
 }
 
-export default function Sidebar({ onChordMatrixClick, onSettingsClick }: SidebarProps) {
+export default function Sidebar({ onConversationsClick, onChordMatrixClick, onSettingsClick }: SidebarProps) {
   const [hoveredIcon, setHoveredIcon] = useState<string | null>(null);
 
   return (
     <div className="fixed left-0 top-0 h-screen w-16 bg-slate-900 shadow-lg flex flex-col items-center py-4 gap-4 z-50">
+      {/* Conversations */}
+      <button
+        type="button"
+        onClick={onConversationsClick}
+        onMouseEnter={() => setHoveredIcon('conversations')}
+        onMouseLeave={() => setHoveredIcon(null)}
+        className="relative w-12 h-12 rounded-lg bg-slate-800 hover:bg-slate-700 transition-all flex items-center justify-center group"
+        title="Conversations"
+      >
+        <svg
+          className="w-6 h-6 text-slate-300 group-hover:text-white transition-colors"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M7 8h10M7 12h6m5-9H6a2 2 0 00-2 2v14l4-4h10a2 2 0 002-2V5a2 2 0 00-2-2z"
+          />
+        </svg>
+        {hoveredIcon === 'conversations' && (
+          <div className="absolute left-full ml-2 px-2 py-1 bg-slate-800 text-white text-xs rounded whitespace-nowrap">
+            Conversations
+          </div>
+        )}
+      </button>
+
       {/* Chord Matrix */}
       <button
         type="button"

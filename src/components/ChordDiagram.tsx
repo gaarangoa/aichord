@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent, forwardRef, useImperativeHandle, type SyntheticEvent } from 'react';
 import { usePianoSynthesizer, type Note } from '@/lib/piano';
 import { useWebMidiChordSender } from '@/lib/midi';
+import type { ChordPlaybackControls } from '@/types/harmony';
 
 type ChordQuality =
   | 'major' | 'minor'
@@ -48,6 +49,8 @@ export interface ChordDiagramHandle {
 
 export interface ChordDiagramProps {
   onChordTriggered?: (event: ChordTriggerEvent) => void;
+  initialControls?: ChordPlaybackControls;
+  onControlsChange?: (controls: ChordPlaybackControls) => void;
 }
 
 const OCTAVE_OPTIONS = [-1, 0, 1, 2, 3, 4, 5, 6] as const;
@@ -127,18 +130,21 @@ const CHORD_GROUPS: Array<{
   },
 ];
 
-const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChordTriggered }, ref) => {
+const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(
+  ({ onChordTriggered, initialControls, onControlsChange }, ref) => {
   const { initialize, startContext, stopAllNotes, playChord } = usePianoSynthesizer();
   const [isSynthInitialized, setIsSynthInitialized] = useState(false);
   const [playingNode, setPlayingNode] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(4);
-  const [baseOctave, setBaseOctave] = useState<number>(2);
-  const [velocity, setVelocity] = useState<number>(56);
-  const [velocityVariance, setVelocityVariance] = useState<number>(10);
-  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(1);
-  const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(10);
-  const [useInternalAudio, setUseInternalAudio] = useState(true);
+  const [noteDurationSeconds, setNoteDurationSeconds] = useState<number>(initialControls?.noteDurationSeconds ?? 4);
+  const [baseOctave, setBaseOctave] = useState<number>(initialControls?.baseOctave ?? 2);
+  const [velocity, setVelocity] = useState<number>(initialControls?.velocity ?? 56);
+  const [velocityVariance, setVelocityVariance] = useState<number>(initialControls?.velocityVariance ?? 10);
+  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(initialControls?.arpeggioIntervalMs ?? 1);
+  const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(
+    initialControls?.arpeggioTimingJitterPercent ?? 10
+  );
+  const [useInternalAudio, setUseInternalAudio] = useState(initialControls?.useInternalAudio ?? true);
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(true);
 
   const {
@@ -165,6 +171,73 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
     arpeggioTimingJitterPercent,
     useInternalAudio,
   });
+
+  useEffect(() => {
+    if (!initialControls) return;
+
+    if (
+      initialControls.noteDurationSeconds !== undefined &&
+      initialControls.noteDurationSeconds !== noteDurationSeconds
+    ) {
+      setNoteDurationSeconds(initialControls.noteDurationSeconds);
+    }
+    if (initialControls.baseOctave !== undefined && initialControls.baseOctave !== baseOctave) {
+      setBaseOctave(initialControls.baseOctave);
+    }
+    if (initialControls.velocity !== undefined && initialControls.velocity !== velocity) {
+      setVelocity(initialControls.velocity);
+    }
+    if (initialControls.velocityVariance !== undefined && initialControls.velocityVariance !== velocityVariance) {
+      setVelocityVariance(initialControls.velocityVariance);
+    }
+    if (initialControls.arpeggioIntervalMs !== undefined && initialControls.arpeggioIntervalMs !== arpeggioIntervalMs) {
+      setArpeggioIntervalMs(initialControls.arpeggioIntervalMs);
+    }
+    if (
+      initialControls.arpeggioTimingJitterPercent !== undefined &&
+      initialControls.arpeggioTimingJitterPercent !== arpeggioTimingJitterPercent
+    ) {
+      setArpeggioTimingJitterPercent(initialControls.arpeggioTimingJitterPercent);
+    }
+    if (
+      typeof initialControls.useInternalAudio === 'boolean' &&
+      initialControls.useInternalAudio !== useInternalAudio
+    ) {
+      setUseInternalAudio(initialControls.useInternalAudio);
+    }
+  }, [
+    initialControls,
+    noteDurationSeconds,
+    baseOctave,
+    velocity,
+    velocityVariance,
+    arpeggioIntervalMs,
+    arpeggioTimingJitterPercent,
+    useInternalAudio,
+  ]);
+
+  useEffect(() => {
+    if (!onControlsChange) return;
+
+    onControlsChange({
+      noteDurationSeconds,
+      baseOctave,
+      velocity,
+      velocityVariance,
+      arpeggioIntervalMs,
+      arpeggioTimingJitterPercent,
+      useInternalAudio,
+    });
+  }, [
+    noteDurationSeconds,
+    baseOctave,
+    velocity,
+    velocityVariance,
+    arpeggioIntervalMs,
+    arpeggioTimingJitterPercent,
+    useInternalAudio,
+    onControlsChange,
+  ]);
 
   const sustainSeconds = useMemo(() => Math.max(0.2, noteDurationSeconds), [noteDurationSeconds]);
   const displayHoldSeconds = useMemo(() => sustainSeconds.toFixed(2), [sustainSeconds]);
@@ -496,143 +569,6 @@ return (
             {isPanelCollapsed ? 'Show' : 'Hide'}
           </button>
         </div>
-        {!isPanelCollapsed && (
-          <div className="mt-3 space-y-3 border-t border-gray-200 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Playback</p>
-            <label className="mt-2 flex items-center justify-between text-xs font-medium text-gray-600">
-              <span>Internal Audio</span>
-              <input
-                type="checkbox"
-                checked={useInternalAudio}
-                onChange={handleInternalAudioToggle}
-                className="h-4 w-4 accent-blue-600"
-              />
-            </label>
-            {audioError && (
-              <p className="text-xs text-red-500">{audioError}</p>
-            )}
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Hold Duration (seconds)
-              <input
-                type="number"
-                min={0.2}
-                max={30}
-                step={0.1}
-                value={noteDurationSeconds}
-                onChange={handleDurationChange}
-                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <input
-              type="range"
-              min={0.2}
-              max={30}
-              step={0.1}
-              value={noteDurationSeconds}
-              onChange={handleDurationChange}
-              className="w-full"
-            />
-            <div className="text-xs text-gray-600">
-              Hold: <span className="font-semibold text-gray-700">{displayHoldSeconds}s</span>
-              <span className="ml-2">Interval: {(arpeggioIntervalMs / 1000).toFixed(2)}s</span>
-            </div>
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Base Octave
-              <select
-                value={baseOctave}
-                onChange={handleBaseOctaveChange}
-                className="mt-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              >
-                {OCTAVE_OPTIONS.map(option => (
-                  <option key={option} value={option}>{`C${option}`}</option>
-                ))}
-              </select>
-            </label>
-            <input
-              type="range"
-              min={Math.min(...OCTAVE_OPTIONS)}
-              max={Math.max(...OCTAVE_OPTIONS)}
-              step={1}
-              value={baseOctave}
-              onChange={handleBaseOctaveChange}
-              className="w-full"
-            />
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Velocity
-              <input
-                type="number"
-                min={1}
-                max={127}
-                step={1}
-                value={velocity}
-                onChange={handleVelocityChange}
-                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <input
-              type="range"
-              min={1}
-              max={127}
-              step={1}
-              value={velocity}
-              onChange={handleVelocityChange}
-              className="w-full"
-            />
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Velocity Variance (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={velocityVariance}
-                onChange={handleVelocityVarianceChange}
-                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={velocityVariance}
-              onChange={handleVelocityVarianceChange}
-              className="w-full"
-            />
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Arpeggio Interval (ms)
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={arpeggioIntervalMs}
-                onChange={handleArpeggioIntervalChange}
-                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <label className="mt-2 flex flex-col text-xs font-medium text-gray-600">
-              Timing Variance (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={arpeggioTimingJitterPercent}
-                onChange={handleArpeggioJitterChange}
-                className="mt-1 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={arpeggioTimingJitterPercent}
-              onChange={handleArpeggioJitterChange}
-              className="w-full"
-            />
-          </div>
-        )}
       </div>
 
     <div className="flex-1 w-full overflow-auto px-4 pb-6 pt-2">

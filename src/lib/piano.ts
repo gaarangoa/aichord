@@ -99,7 +99,11 @@ class StringEnsemble {
       await this.initialize();
     } catch (error) {
       console.error('Failed to start audio context:', error);
-      throw error;
+      const baseMessage =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Browser blocked audio playback.';
+      throw new Error(`${baseMessage} Click inside the app to enable sound.`);
     }
   }
 

@@ -1,31 +1,23 @@
 'use client';
 
-import { ForwardRefExoticComponent, RefAttributes } from 'react';
-import dynamic from 'next/dynamic';
-import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@/components/ChordDiagram';
+import type { PropsWithChildren } from 'react';
 
-const ChordDiagram = dynamic(
-  () => import('@/components/ChordDiagram'),
-  { ssr: false }
-) as ForwardRefExoticComponent<ChordDiagramProps & RefAttributes<ChordDiagramHandle>>;
-
-interface ChordMatrixModalProps {
+interface ChordMatrixModalProps extends PropsWithChildren {
   isOpen: boolean;
   onClose: () => void;
-  diagramRef: React.RefObject<ChordDiagramHandle | null>;
-  onChordTriggered: (event: ChordTriggerEvent) => void;
 }
 
 export default function ChordMatrixModal({
   isOpen,
   onClose,
-  diagramRef,
-  onChordTriggered,
+  children,
 }: ChordMatrixModalProps) {
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      style={{ display: isOpen ? 'flex' : 'none' }}
+      aria-hidden={!isOpen}
+    >
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-y-auto mx-4">
         {/* Header */}
         <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between rounded-t-2xl z-10">
@@ -46,7 +38,7 @@ export default function ChordMatrixModal({
           <p className="text-sm text-slate-600 mb-4">
             Click on any chord to play and add it to your progression
           </p>
-          <ChordDiagram ref={diagramRef} onChordTriggered={onChordTriggered} />
+          {children}
         </div>
 
         {/* Footer */}

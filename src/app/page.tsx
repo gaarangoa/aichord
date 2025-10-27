@@ -1972,14 +1972,9 @@ export default function Home() {
       <ChordMatrixModal
         isOpen={isChordMatrixOpen}
         onClose={() => setIsChordMatrixOpen(false)}
-        diagramRef={diagramRef}
-        onChordTriggered={handleChordTriggered}
-      />
-
-      {/* Hidden ChordDiagram for MIDI playback */}
-      <div className="hidden">
+      >
         <ChordDiagram ref={diagramRef} onChordTriggered={handleChordTriggered} />
-      </div>
+      </ChordMatrixModal>
     </div>
   );
 }

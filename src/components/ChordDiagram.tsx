@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, ChangeEvent, forwardRef, useImperativeHandle, type SyntheticEvent } from 'react';
 import { usePianoSynthesizer, type Note } from '@/lib/piano';
 import { useWebMidiChordSender } from '@/lib/midi';
 
@@ -261,6 +261,24 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(({ onChor
       setAudioError(error instanceof Error ? error.message : 'Failed to prepare internal audio.');
     }
   }, [initializePiano, isSynthInitialized, startContext, useInternalAudio]);
+
+  const handleAudioWarmup = useCallback((event: SyntheticEvent<HTMLButtonElement>) => {
+    if (!useInternalAudio) {
+      return;
+    }
+
+    void event;
+
+    setAudioError(null);
+    void startContext().catch(error => {
+      console.error('Browser blocked audio context unlock attempt:', error);
+      setAudioError(
+        error instanceof Error
+          ? error.message
+          : 'Browser blocked audio playback. Click inside the app to enable sound.'
+      );
+    });
+  }, [startContext, useInternalAudio]);
 
   const stopPlayback = useCallback((options?: { skipGenerationIncrement?: boolean }) => {
     if (!options?.skipGenerationIncrement) {
@@ -666,6 +684,8 @@ return (
                         <button
                           type="button"
                           className={`${baseClasses} ${visualClasses}`}
+                          onMouseDown={handleAudioWarmup}
+                          onTouchStart={handleAudioWarmup}
                           onClick={() => handleNodeClick(cell)}
                           onMouseEnter={() => setHoveredNode(cell.id)}
                           onMouseLeave={() => setHoveredNode(prev => (prev === cell.id ? null : prev))}

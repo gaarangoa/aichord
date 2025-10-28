@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ForwardRefExoticComponent, RefAttributes } from 'react';
 import dynamic from 'next/dynamic';
+import ReactMarkdown from 'react-markdown';
 import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@/components/ChordDiagram';
 import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
@@ -210,6 +211,7 @@ export default function Home() {
   const [ollamaSessionId, setOllamaSessionId] = useState<string>(
     initialSessionRef.current?.ollamaSessionId ?? createId()
   );
+  const [thinkingTick, setThinkingTick] = useState(0);
   const [editingChordId, setEditingChordId] = useState<string | null>(null);
   const [editChordInput, setEditChordInput] = useState('');
   const [editMeasuresInput, setEditMeasuresInput] = useState('1');
@@ -545,6 +547,8 @@ export default function Home() {
       let assistantContent = '';
       let tokenCount: number | undefined;
       let buffer = '';
+      let assistantCreated = false;
+      const assistantTimestamp = Date.now();
 
       const normalizeChunkText = (input: unknown): string => {
         if (!input) return '';
@@ -562,13 +566,42 @@ export default function Home() {
       };
 
       const updateAssistantMessage = (content: string, tokens?: number) => {
-        setMessages(prev =>
-          prev.map(message =>
-            message.id === assistantMessageId
-              ? { ...message, content, tokens: tokens ?? message.tokens }
-              : message
-          )
-        );
+        const text = content ?? '';
+        const shouldForceCreate = tokens !== undefined && assistantCreated;
+
+        setMessages(prev => {
+          const index = prev.findIndex(message => message.id === assistantMessageId);
+
+          if (index === -1) {
+            if (!shouldForceCreate && text.trim().length === 0) {
+              return prev;
+            }
+
+            assistantCreated = true;
+            return [
+              ...prev,
+              {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: text,
+                timestamp: assistantTimestamp,
+                tokens,
+              },
+            ];
+          }
+
+          const next = [...prev];
+          const existing = next[index];
+          next[index] = {
+            ...existing,
+            content: text,
+            tokens: tokens ?? existing.tokens,
+          };
+          if (text.trim().length > 0) {
+            assistantCreated = true;
+          }
+          return next;
+        });
       };
 
       const appendChunkText = (input: unknown) => {
@@ -666,6 +699,9 @@ export default function Home() {
         sessionInitRef.current.set(ollamaSessionId, true);
         return assistantContent;
       } catch (error) {
+        if (assistantCreated || assistantContent.trim().length > 0) {
+          setMessages(prev => prev.filter(message => message.id !== assistantMessageId));
+        }
         sessionInitRef.current.set(ollamaSessionId, false);
         throw error;
       } finally {
@@ -1065,6 +1101,25 @@ export default function Home() {
     }
   }, [messages]);
 
+  useEffect(() => {
+    if (isSending && userIsAtBottomRef.current && messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
+  }, [isSending]);
+
+  useEffect(() => {
+    if (!isSending) {
+      setThinkingTick(0);
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setThinkingTick(prev => (prev + 1) % 3);
+    }, 500);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isSending]);
+
   const appendMessage = useCallback((message: ChatMessage) => {
     setMessages(prev => [...prev, message]);
   }, []);
@@ -1328,22 +1383,10 @@ export default function Home() {
       setChatInput('');
       setChatError(null);
 
-      const assistantMessageId = createId();
-      setMessages(prev => [
-        ...prev,
-        {
-          id: assistantMessageId,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-        },
-      ]);
-
       try {
-        await streamAgentResponse(trimmed, assistantMessageId, conversationHistory);
+        await streamAgentResponse(trimmed, createId(), conversationHistory);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
-        setMessages(prev => prev.filter(entry => entry.id !== assistantMessageId));
         appendMessage({
           id: createId(),
           role: 'system',
@@ -1385,22 +1428,10 @@ export default function Home() {
 
     appendMessage(briefingMessage);
 
-    const assistantMessageId = createId();
-    setMessages(prev => [
-      ...prev,
-      {
-        id: assistantMessageId,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-      },
-    ]);
-
     try {
-      await streamAgentResponse('Summarize the current session so far.', assistantMessageId, conversationHistory);
+      await streamAgentResponse('Summarize the current session so far.', createId(), conversationHistory);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to reach the selected model.';
-      setMessages(prev => prev.filter(entry => entry.id !== assistantMessageId));
       appendMessage({
         id: createId(),
         role: 'system',
@@ -1698,38 +1729,21 @@ export default function Home() {
   const renderMessageContent = useCallback((content: string) => {
     // Regex to match [CHORD: ... ] ... [/CHORD] blocks
     const chordPattern = /\[CHORD:[^\]]+\][\s\S]*?\[\/CHORD\]/g;
-    const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
-    let keyCounter = 0;
+
+    const segments: Array<{ type: 'markdown'; text: string } | { type: 'chord'; chord: ParsedChord }> = [];
 
     while ((match = chordPattern.exec(content)) !== null) {
       // Add text before the chord
       if (match.index > lastIndex) {
-        parts.push(content.substring(lastIndex, match.index));
+        segments.push({ type: 'markdown', text: content.substring(lastIndex, match.index) });
       }
 
       const parsedChord = parseChordDefinition(match[0]);
 
       if (parsedChord) {
-        const noteCount = parsedChord.noteSequence.length;
-        // Add clickable chord button
-        parts.push(
-          <button
-            key={`chord-${keyCounter++}`}
-            type="button"
-            onClick={() => handleAddParsedChord(parsedChord)}
-            className="mx-1 inline-flex flex-col items-start gap-0.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-700 transition hover:border-blue-400 hover:bg-blue-100 hover:shadow-sm"
-            title={`Click to add ${parsedChord.name} to playground`}
-          >
-            <div className="flex items-center gap-1">
-              <span>{parsedChord.name}</span>
-              <span className="text-[10px] text-blue-500">({parsedChord.measures} bar{parsedChord.measures !== 1 ? 's' : ''})</span>
-              <span className="text-xs">+</span>
-            </div>
-            <span className="text-[9px] text-blue-400">{noteCount} notes</span>
-          </button>
-        );
+        segments.push({ type: 'chord', chord: parsedChord });
       }
 
       lastIndex = match.index + match[0].length;
@@ -1737,10 +1751,72 @@ export default function Home() {
 
     // Add remaining text
     if (lastIndex < content.length) {
-      parts.push(content.substring(lastIndex));
+      segments.push({ type: 'markdown', text: content.substring(lastIndex) });
     }
 
-    return parts.length > 0 ? parts : content;
+    if (segments.length === 0) {
+      segments.push({ type: 'markdown', text: content });
+    }
+
+    return (
+      <>
+        {segments.map((segment, index) => {
+          if (segment.type === 'chord') {
+            const chord = segment.chord;
+            return (
+              <button
+                key={`chord-${index}-${chord.name}`}
+                type="button"
+                onClick={() => handleAddParsedChord(chord)}
+                className="mx-1 inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-100"
+                title={`Click to add ${chord.name} to playground`}
+              >
+                <span>{chord.name}</span>
+              </button>
+            );
+          }
+
+          const text = segment.text;
+          if (!text) {
+            return null;
+          }
+
+          return (
+            <ReactMarkdown
+              key={`md-${index}`}
+              components={{
+                p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+                ul: ({ children }) => <ul className="mb-3 list-disc pl-5 last:mb-0">{children}</ul>,
+                ol: ({ children }) => <ol className="mb-3 list-decimal pl-5 last:mb-0">{children}</ol>,
+                li: ({ children }) => <li className="mb-1 last:mb-0">{children}</li>,
+                pre: ({ children }) => (
+                  <pre className="mb-3 overflow-x-auto rounded-lg bg-slate-900 px-3 py-3 text-sm text-slate-100">
+                    {children}
+                  </pre>
+                ),
+                code: ({ inline, className, children, ...props }) =>
+                  inline ? (
+                    <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[13px] text-slate-800" {...props}>
+                      {children}
+                    </code>
+                  ) : (
+                    <code className={className} {...props}>
+                      {children}
+                    </code>
+                  ),
+                a: ({ children, href }) => (
+                  <a href={href ?? undefined} className="text-blue-600 underline hover:text-blue-500" target="_blank" rel="noreferrer">
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {text}
+            </ReactMarkdown>
+          );
+        })}
+      </>
+    );
   }, [parseChordDefinition, handleAddParsedChord]);
 
   return (
@@ -1756,7 +1832,7 @@ export default function Home() {
       <main className="flex-1 ml-16 flex flex-col h-screen overflow-hidden">
 
         {/* Music Sheet - Fixed at top */}
-        <section className="bg-white border-b border-slate-200 shadow-sm w-full">
+        <section className="bg-white w-full">
           <div className="w-full py-4">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-4 px-4">
               <div className="flex items-center gap-3">
@@ -2497,33 +2573,47 @@ export default function Home() {
           </section>
 
           {/* Creative Chat - Fills 100% of remaining screen */}
-          <section className="flex-1 flex flex-col bg-slate-50 min-h-0">
-            <div className="border-b border-slate-200 bg-white px-4 py-3" aria-hidden />
+          <section className="flex-1 flex flex-col bg-white min-h-0">
 
             <div
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
               className="flex-1 overflow-y-auto"
             >
-              <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+              <div className="max-w-3xl mx-auto px-3 py-4 space-y-3.5">
                 {messages.map(message => {
-                  const roleStyles =
-                    message.role === 'assistant'
-                      ? 'bg-white text-slate-900 border border-slate-200'
-                      : message.role === 'user'
-                        ? 'bg-slate-50 text-slate-900 border border-slate-200'
-                        : 'bg-slate-100 text-slate-600 border border-slate-200';
-                  const textClass =
-                    message.role === 'system' ? 'text-slate-600 italic' : 'text-slate-900';
+                  if (message.role === 'assistant' && message.content.trim().length === 0) {
+                    return null;
+                  }
+
+                  const isUserMessage = message.role === 'user';
+                  const isSystemMessage = message.role === 'system';
 
                   return (
-                    <article key={message.id} className="w-full">
-                      <div className={`w-full rounded-xl px-5 py-4 shadow-sm ${roleStyles}`}>
-                        <div className={`whitespace-pre-line leading-relaxed ${textClass}`}>
-                          {renderMessageContent(message.content)}
-                        </div>
+                    <article
+                      key={message.id}
+                      className={`w-full flex flex-col ${isUserMessage ? 'items-end' : 'items-start'}`}
+                    >
+                      <div
+                        className={
+                          isUserMessage
+                            ? 'inline-block max-w-full rounded-2xl bg-slate-50 px-4 py-3 text-slate-900'
+                            : `inline-block max-w-full whitespace-pre-line leading-relaxed text-[15px] ${isSystemMessage ? 'text-slate-500 italic' : 'text-slate-900'}`
+                        }
+                      >
+                        {isUserMessage ? (
+                          <div className="whitespace-pre-line leading-relaxed text-[15px]">
+                            {renderMessageContent(message.content)}
+                          </div>
+                        ) : (
+                          renderMessageContent(message.content)
+                        )}
                       </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                      <div
+                        className={`mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400 ${
+                          isUserMessage ? 'justify-end text-right' : ''
+                        }`}
+                      >
                         <span className="capitalize">{message.role}</span>
                         {message.tokens !== undefined && (
                           <span>• {message.tokens.toLocaleString()} tokens</span>
@@ -2535,20 +2625,25 @@ export default function Home() {
                     </article>
                   );
                 })}
+                {isSending && (
+                  <div className="text-[11px] font-medium text-slate-500" aria-live="polite">
+                    Thinking{'.'.repeat(thinkingTick + 1)}
+                  </div>
+                )}
                 <div ref={messagesEndRef} />
               </div>
             </div>
 
             {/* Chat input */}
-            <div className="border-t border-slate-200 bg-white p-4">
+            <div className="bg-white p-3">
               <div className="max-w-3xl mx-auto">
-                <form onSubmit={handleSendMessage} className="flex gap-3">
+                <form onSubmit={handleSendMessage} className="flex gap-2.5">
                   <input
                     value={chatInput}
                     onChange={event => setChatInput(event.target.value)}
                     disabled={isSending}
                     placeholder="Message the agent..."
-                    className="flex-1 rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 shadow-sm"
+                    className="flex-1 rounded-2xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-800 focus:border-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 shadow-sm"
                   />
                   <button
                     type="submit"
@@ -2558,7 +2653,7 @@ export default function Home() {
                       !agentPrompt ||
                       !activeAgent
                     }
-                    className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 shadow-sm"
+                    className="rounded-2xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 shadow-sm"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />

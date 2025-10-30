@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, FormEvent, ForwardRefExoticComponent, RefAttributes } from 'react';
+import type { ChangeEvent, FormEvent, ForwardRefExoticComponent, ReactNode, RefAttributes } from 'react';
 import dynamic from 'next/dynamic';
 import ReactMarkdown from 'react-markdown';
+import type { Components as MarkdownComponents } from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@/components/ChordDiagram';
 import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
@@ -99,6 +101,51 @@ const DEFAULT_CHORD_CONTROLS: ChordPlaybackControls = {
   arpeggioIntervalMs: 1,
   arpeggioTimingJitterPercent: 10,
   useInternalAudio: true,
+};
+
+const MARKDOWN_COMPONENTS: MarkdownComponents = {
+  p: ({ children }) => <p className="mb-1 last:mb-0 leading-relaxed">{children}</p>,
+  ul: ({ children }) => <ul className="mb-1 list-disc pl-4 last:mb-0 leading-relaxed">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-1 list-decimal pl-4 last:mb-0 leading-relaxed">{children}</ol>,
+  li: ({ children }) => <li className="mb-1 last:mb-0">{children}</li>,
+  pre: ({ children }) => (
+    <pre className="mb-1 overflow-x-auto rounded-lg bg-slate-900 px-3 py-3 text-sm text-slate-100">
+      {children}
+    </pre>
+  ),
+  code: ({ inline, className, children, ...props }) =>
+    inline ? (
+      <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[13px] text-slate-800" {...props}>
+        {children}
+      </code>
+    ) : (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    ),
+  a: ({ children, href }) => (
+    <a href={href ?? undefined} className="text-blue-600 underline hover:text-blue-500" target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+};
+
+const REASONING_PATTERN = /(?:^|\n)(#{1,6}\s*Reasoning|(?:\*\*|__)Reasoning(?:\*\*|__)?|Reasoning\s*:)/i;
+
+const extractReasoningSection = (text: string): { body: string; reasoning: string | null } => {
+  const match = REASONING_PATTERN.exec(text);
+  if (!match) {
+    return { body: text, reasoning: null };
+  }
+
+  const startIndex = match.index + match[0].length;
+  const body = text.slice(0, match.index).trimEnd();
+  const reasoningRaw = text.slice(startIndex).trim();
+
+  return {
+    body,
+    reasoning: reasoningRaw.length > 0 ? reasoningRaw : null,
+  };
 };
 
 const createControlState = (overrides?: Partial<ChordPlaybackControls>): ChordPlaybackControls => ({
@@ -1726,99 +1773,140 @@ export default function Home() {
     return { name, measures, noteSequence };
   }, []);
 
-  const renderMessageContent = useCallback((content: string) => {
-    // Regex to match [CHORD: ... ] ... [/CHORD] blocks
-    const chordPattern = /\[CHORD:[^\]]+\][\s\S]*?\[\/CHORD\]/g;
-    let lastIndex = 0;
-    let match;
+  const renderMessageContent = useCallback(
+    (content: string, role: ChatMessage['role']) => {
+      type Segment = { kind: 'text'; value: string } | { kind: 'chord'; chord: ParsedChord };
 
-    const segments: Array<{ type: 'markdown'; text: string } | { type: 'chord'; chord: ParsedChord }> = [];
+      const parseSegments = (input: string): Segment[] => {
+        const segments: Segment[] = [];
+        if (!input) {
+          return segments;
+        }
+        const regex = /\[CHORD:[^\]]+\][\s\S]*?\[\/CHORD\]/g;
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(input)) !== null) {
+          if (match.index > lastIndex) {
+            segments.push({ kind: 'text', value: input.substring(lastIndex, match.index) });
+          }
+          const chord = parseChordDefinition(match[0]);
+          if (chord) {
+            segments.push({ kind: 'chord', chord });
+          }
+          lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < input.length) {
+          segments.push({ kind: 'text', value: input.substring(lastIndex) });
+        }
+        return segments;
+      };
 
-    while ((match = chordPattern.exec(content)) !== null) {
-      // Add text before the chord
-      if (match.index > lastIndex) {
-        segments.push({ type: 'markdown', text: content.substring(lastIndex, match.index) });
-      }
+      let nodeKey = 0;
+      const renderSegments = (segments: Segment[], keyPrefix: string): ReactNode[] =>
+        segments
+          .map(segment => {
+            if (segment.kind === 'chord') {
+              return (
+                <button
+                  key={`${keyPrefix}-chord-${nodeKey++}`}
+                  type="button"
+                  onClick={() => handleAddParsedChord(segment.chord)}
+                  className="mx-1 inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-100"
+                  title={`Click to add ${segment.chord.name} to playground`}
+                >
+                  <span>{segment.chord.name}</span>
+                </button>
+              );
+            }
 
-      const parsedChord = parseChordDefinition(match[0]);
+            const textValue = segment.value;
+            if (!textValue || textValue.trim().length === 0) {
+              return null;
+            }
 
-      if (parsedChord) {
-        segments.push({ type: 'chord', chord: parsedChord });
-      }
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text
-    if (lastIndex < content.length) {
-      segments.push({ type: 'markdown', text: content.substring(lastIndex) });
-    }
-
-    if (segments.length === 0) {
-      segments.push({ type: 'markdown', text: content });
-    }
-
-    return (
-      <>
-        {segments.map((segment, index) => {
-          if (segment.type === 'chord') {
-            const chord = segment.chord;
             return (
-              <button
-                key={`chord-${index}-${chord.name}`}
-                type="button"
-                onClick={() => handleAddParsedChord(chord)}
-                className="mx-1 inline-flex items-center rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-100"
-                title={`Click to add ${chord.name} to playground`}
+              <ReactMarkdown
+                key={`${keyPrefix}-md-${nodeKey++}`}
+                components={MARKDOWN_COMPONENTS}
+                remarkPlugins={[remarkBreaks]}
               >
-                <span>{chord.name}</span>
-              </button>
+                {textValue}
+              </ReactMarkdown>
             );
-          }
+          })
+          .filter(Boolean) as ReactNode[];
 
-          const text = segment.text;
-          if (!text) {
-            return null;
-          }
+      if (role !== 'assistant') {
+        return <>{renderSegments(parseSegments(content), 'msg')}</>;
+      }
 
-          return (
-            <ReactMarkdown
-              key={`md-${index}`}
-              components={{
-                p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-                ul: ({ children }) => <ul className="mb-3 list-disc pl-5 last:mb-0">{children}</ul>,
-                ol: ({ children }) => <ol className="mb-3 list-decimal pl-5 last:mb-0">{children}</ol>,
-                li: ({ children }) => <li className="mb-1 last:mb-0">{children}</li>,
-                pre: ({ children }) => (
-                  <pre className="mb-3 overflow-x-auto rounded-lg bg-slate-900 px-3 py-3 text-sm text-slate-100">
-                    {children}
-                  </pre>
-                ),
-                code: ({ inline, className, children, ...props }) =>
-                  inline ? (
-                    <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[13px] text-slate-800" {...props}>
-                      {children}
-                    </code>
-                  ) : (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  ),
-                a: ({ children, href }) => (
-                  <a href={href ?? undefined} className="text-blue-600 underline hover:text-blue-500" target="_blank" rel="noreferrer">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {text}
-            </ReactMarkdown>
-          );
-        })}
-      </>
-    );
-  }, [parseChordDefinition, handleAddParsedChord]);
+      let mainText = content;
+      let musicText: string | null = null;
+      const musicHeadingRegex = /(^|\n)#+\s*music\b/i;
+      const musicMatch = musicHeadingRegex.exec(content);
+      if (musicMatch) {
+        const startIndex = musicMatch.index;
+        mainText = content.slice(0, startIndex).trimEnd();
+        musicText = content.slice(startIndex).trim();
+      }
 
+      const { body: baseBody, reasoning: reasoningRaw } = extractReasoningSection(mainText);
+      const baseSegments = parseSegments(baseBody);
+      const reasoningText = reasoningRaw?.trim() ?? '';
+      const hasReasoning = reasoningText.length > 0;
+      const reasoningSegments = hasReasoning ? parseSegments(reasoningText) : parseSegments(content);
+      const bodySegments = hasReasoning ? baseSegments : [];
+      const musicSegments = musicText ? parseSegments(musicText) : [];
+
+      const bodyNodes = renderSegments(bodySegments, 'body');
+      const musicNodes = renderSegments(musicSegments, 'music');
+      const reasoningNodes = renderSegments(reasoningSegments, 'reasoning');
+      const shouldShowMusic = hasReasoning && musicNodes.length > 0;
+
+      const result: ReactNode[] = [];
+
+      result.push(
+        <details key="reasoning-panel" open className="group mb-2 w-full max-w-full text-slate-600">
+          <summary className="flex cursor-pointer items-center gap-2 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 outline-none">
+            Agent reasoning
+            <span className="text-[10px] text-slate-400 group-open:hidden">show</span>
+            <span className="hidden text-[10px] text-slate-400 group-open:inline">hide</span>
+          </summary>
+          <div className="mt-2 rounded-md bg-slate-100 px-3 py-2 text-sm leading-relaxed">
+            {reasoningNodes.length > 0 ? reasoningNodes : (
+              <p className="text-slate-400 text-xs italic">No reasoning provided.</p>
+            )}
+          </div>
+        </details>
+      );
+
+      if (bodyNodes.length > 0) {
+        result.push(
+          <div key="assistant-body" className="space-y-2">
+            {bodyNodes}
+          </div>
+        );
+      }
+
+      if (shouldShowMusic && musicNodes.length > 0) {
+        result.push(
+          <details key="music-panel" open className="group mt-3 w-full max-w-full text-slate-700">
+            <summary className="flex cursor-pointer items-center gap-2 rounded-md bg-slate-200/80 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600 outline-none hover:bg-slate-200">
+              Music
+              <span className="text-[10px] text-slate-500 group-open:hidden">show</span>
+              <span className="hidden text-[10px] text-slate-500 group-open:inline">hide</span>
+            </summary>
+            <div className="mt-2 rounded-md bg-slate-200/60 px-3 py-2 text-sm leading-relaxed">
+              {musicNodes}
+            </div>
+          </details>
+        );
+      }
+
+      return <>{result}</>;
+    },
+    [handleAddParsedChord, parseChordDefinition]
+  );
   return (
     <div className="min-h-screen bg-slate-50 flex">
       {/* Sidebar */}
@@ -2224,7 +2312,7 @@ export default function Home() {
                           </div>
 
                           {/* Chord labels at the bottom - only show on first note of each measure */}
-                          <div className="relative mt-8 ml-12" style={{ height: '30px' }}>
+                          <div className="relative mt-8" style={{ height: '30px', marginLeft: '0px' }}>
                             {(() => {
                               // Track which chords we've already shown in each measure
                               const shownLabels = new Map<number, Set<string>>(); // measure -> set of chord labels
@@ -2588,6 +2676,7 @@ export default function Home() {
 
                   const isUserMessage = message.role === 'user';
                   const isSystemMessage = message.role === 'system';
+                  const renderedContent = renderMessageContent(message.content, message.role);
 
                   return (
                     <article
@@ -2603,15 +2692,15 @@ export default function Home() {
                       >
                         {isUserMessage ? (
                           <div className="whitespace-pre-line leading-relaxed text-[15px]">
-                            {renderMessageContent(message.content)}
+                            {renderedContent}
                           </div>
                         ) : (
-                          renderMessageContent(message.content)
+                          renderedContent
                         )}
                       </div>
                       <div
-                        className={`mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400 ${
-                          isUserMessage ? 'justify-end text-right' : ''
+                        className={`mt-1.5 flex w-fit flex-wrap items-center gap-2 pl-2 text-[11px] text-slate-400 ${
+                          isUserMessage ? 'self-end' : ''
                         }`}
                       >
                         <span className="capitalize">{message.role}</span>

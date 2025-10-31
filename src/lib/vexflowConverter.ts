@@ -7,6 +7,7 @@ interface NoteData {
   octave: number;
   duration: NoteDuration;
   chordLabel?: string;
+  velocity?: number;
 }
 
 interface VexNote {
@@ -14,6 +15,8 @@ interface VexNote {
   duration: NoteDuration;
   beat: number;
   chordLabel?: string;
+  velocities?: number[]; // Velocity for each note
+  isRest?: boolean; // True if this is a rest
 }
 
 /**
@@ -60,6 +63,7 @@ export function convertToVexFlow(notes: NoteData[]): VexNote[] {
   notesByBeat.forEach((notesAtBeat, beat) => {
     // Convert all notes at this beat to VexFlow format
     const vexFlowNotes = notesAtBeat.map(n => noteToVexFlow(n.note, n.octave));
+    const velocities = notesAtBeat.map(n => n.velocity || 96);
 
     // Use the duration from the first note (all notes at same beat should have same duration)
     const duration = notesAtBeat[0].duration;
@@ -70,6 +74,8 @@ export function convertToVexFlow(notes: NoteData[]): VexNote[] {
       duration,
       beat,
       chordLabel,
+      velocities,
+      isRest: false,
     });
   });
 
@@ -98,6 +104,7 @@ export function addRestsToVexFlow(
           notes: ['B/4'], // VexFlow rest position
           duration: 'whole',
           beat: currentBeat,
+          isRest: true,
         });
         currentBeat += 4;
       }
@@ -114,6 +121,7 @@ export function addRestsToVexFlow(
           notes: ['B/4'],
           duration: restDur,
           beat: currentBeat,
+          isRest: true,
         });
         currentBeat = note.beat;
       }

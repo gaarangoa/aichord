@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { Note } from '@coderline/alphatab';
-import { AlphaTabApi, Settings } from '@coderline/alphatab';
+import { AlphaTabApi } from '@coderline/alphatab';
 
 export interface NoteLink {
   id: string;
@@ -29,39 +29,34 @@ export default function AlphaTabNotation({
   onReady,
 }: AlphaTabNotationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const apiRef = useRef<AlphaTabApi | null>(null);
-  const hasInitializedRef = useRef(false);
+  const hasInitRef = useRef(false);
 
-  // Initialize API and load notation ONCE
   useEffect(() => {
-    if (hasInitializedRef.current || !containerRef.current || !alphaTex) {
+    // Only run once ever
+    if (hasInitRef.current || !containerRef.current || !alphaTex) {
       return;
     }
-    hasInitializedRef.current = true;
+    hasInitRef.current = true;
 
-    console.log('[AlphaTab] Initializing once and loading notation...');
+    console.log('[AlphaTab] Initializing once...');
 
-    const settings = new Settings();
-    settings.core.engine = 'svg';
-    settings.core.fontDirectory = '/alphatab/font/';
-    settings.core.useWorkers = false;
+    // Set text content
+    containerRef.current.textContent = alphaTex;
 
-    // Page layout mode - wraps like a music sheet
-    settings.display.layoutMode = 'page';
-    settings.display.scale = 0.8;
-
-    const api = new AlphaTabApi(containerRef.current, settings);
-    apiRef.current = api;
-
-    // Load the initial notation
-    api.tex(alphaTex);
+    // Initialize
+    const api = new AlphaTabApi(containerRef.current, {
+      tex: true,
+      core: {
+        fontDirectory: '/alphatab/font/',
+      },
+    });
 
     if (onReady) {
       onReady(api);
     }
 
-    console.log('[AlphaTab] Initialization complete');
-  }, []); // Only once ever
+    console.log('[AlphaTab] Done');
+  }, []);
 
   if (!alphaTex) {
     return (
@@ -72,16 +67,17 @@ export default function AlphaTabNotation({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full"
-      style={{
-        minHeight: '300px',
-        border: '1px solid #e5e7eb',
-        borderRadius: '0.5rem',
-        padding: '1rem',
-        backgroundColor: '#ffffff',
-      }}
-    />
+    <div className="w-full">
+      <div
+        ref={containerRef}
+        style={{
+          minHeight: '300px',
+          border: '1px solid #e5e7eb',
+          borderRadius: '0.5rem',
+          padding: '1rem',
+          backgroundColor: '#ffffff',
+        }}
+      />
+    </div>
   );
 }

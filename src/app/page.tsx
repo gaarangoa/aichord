@@ -10,8 +10,8 @@ import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@
 import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
 import ConversationsDrawer from '@/components/ConversationsDrawer';
-import AlphaTabNotation, { AlphaTabNoteSelection, NoteLink } from '@/components/AlphaTabNotation';
-import { convertToAlphaTex } from '@/lib/alphaTexConverter';
+import VexFlowNotation from '@/components/VexFlowNotation';
+import { convertToVexFlow, addRestsToVexFlow } from '@/lib/vexflowConverter';
 import {
   deleteSession,
   getAllSessions,
@@ -1210,6 +1210,7 @@ export default function Home() {
       octave: item.displayOctave,
       duration: item.duration,
       chordLabel: item.chordLabel,
+      velocity: item.sourceNote.velocity,
     }));
 
     const noteLinks = sortedItems.map(item => item.link);
@@ -1225,17 +1226,18 @@ export default function Home() {
     });
 
     const hasContent = alphaTexNotes.length > 0 || silences.length > 0;
-    const alphaTex = hasContent ? convertToAlphaTex(alphaTexNotes, silences, bpm, 'Chord Progression') : '';
+    const vexNotesWithoutRests = hasContent ? convertToVexFlow(alphaTexNotes) : [];
+    const vexNotes = hasContent ? addRestsToVexFlow(vexNotesWithoutRests) : [];
 
     return {
-      alphaTex,
+      vexNotes,
       noteLinks,
       noteInfoById,
       hasContent,
     };
   }, [chordNotebook, transposeDisplay, octaveTranspose, bpm]);
 
-  const { alphaTex, noteLinks, noteInfoById, hasContent } = notationState;
+  const { vexNotes, noteLinks, noteInfoById, hasContent } = notationState;
 
   useEffect(() => {
     if (!selectedNote) return;
@@ -2211,9 +2213,6 @@ export default function Home() {
     // Calculate total beats for the entire progression
     const totalBeats = chordNotebook.reduce((sum, entry) => sum + entry.measures * 4, 0);
 
-    // Start playback animation
-    playbackStartTimeRef.current = performance.now();
-
     // Smooth animation loop for the playback line
     const animate = () => {
       if (sequenceAbortRef.current || playbackStartTimeRef.current === null) {
@@ -2232,22 +2231,19 @@ export default function Home() {
 
       setCurrentPlaybackBeat(currentBeat);
 
-      // Auto-scroll to the playback position
-      const musicSheet = musicSheetRef.current;
-      if (musicSheet) {
-        const beatSpacing = 30; // Must match the beatSpacing in the render
-        const scrollTarget = currentBeat * beatSpacing;
-        musicSheet.scrollLeft = Math.max(0, scrollTarget - musicSheet.clientWidth / 2);
-      }
+      // Auto-scroll is now handled by VexFlowNotation component
 
       playbackAnimationRef.current = requestAnimationFrame(animate);
     };
 
+    // Start playback timer and animation RIGHT BEFORE the first note plays
+    playbackStartTimeRef.current = performance.now();
     playbackAnimationRef.current = requestAnimationFrame(animate);
 
     for (const entry of chordNotebook) {
       if (sequenceAbortRef.current) break;
 
+      // Play the note immediately (timer already started)
       await handleNotebookPlay(entry.entryId);
 
       // Wait for the measure duration (4 beats per measure in 4/4 time)
@@ -2560,12 +2556,44 @@ export default function Home() {
                       ) : (
                         <div className="w-full">
                           <div className="w-full overflow-x-auto">
-                            <AlphaTabNotation
-                              alphaTex={alphaTex}
-                              noteLinks={noteLinks}
-                              onNoteSelect={handleAlphaTabNoteSelect}
-                              onReady={(api) => {
-                                console.log('AlphaTab ready:', api);
+                            <VexFlowNotation
+                              notes={vexNotes}
+                              currentPlaybackBeat={currentPlaybackBeat}
+                              onNoteClick={(noteIndex) => {
+                                const clickedNote = vexNotes[noteIndex];
+                                if (clickedNote && !clickedNote.isRest && diagramRef.current) {
+                                  // Convert VexFlow note format to MIDI format
+                                  const midiNotes = clickedNote.notes.map((noteKey, idx) => {
+                                    // Parse note format like "C/4" or "C#/4"
+                                    const match = noteKey.match(/^([A-G][#b]?)\/(\d+)$/);
+                                    if (match) {
+                                      // Use the velocity from the note data, or default to 96
+                                      const velocity = clickedNote.velocities?.[idx] || 96;
+                                      return {
+                                        note: match[1],
+                                        octave: parseInt(match[2], 10) + octaveTranspose,
+                                        startOffset: 0,
+                                        duration: 1, // 1 second duration for clicked notes
+                                        velocity: velocity,
+                                      };
+                                    }
+                                    return null;
+                                  }).filter(n => n !== null);
+
+                                  if (midiNotes.length > 0) {
+                                    // Use the average velocity as the base velocity
+                                    const avgVelocity = Math.round(
+                                      midiNotes.reduce((sum, n) => sum + n.velocity, 0) / midiNotes.length
+                                    );
+                                    diagramRef.current.sendMidiNoteSequence(midiNotes, {
+                                      velocity: avgVelocity,
+                                      velocityVariancePercent: 0,
+                                    });
+                                  }
+                                }
+                              }}
+                              onRenderComplete={() => {
+                                console.log('VexFlow render complete');
                               }}
                             />
                           </div>
@@ -2633,62 +2661,12 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <div className="flex flex-wrap gap-3 mt-4 px-2">
+                          {/* Chord boxes hidden - user requested to remove them */}
+                          {/* <div className="flex flex-wrap gap-3 mt-4 px-2">
                             {chordNotebook.map((entry, index) => {
-                              if (entry.isSilence) return null;
-
-                              const isDragging = draggingChordIndex === index;
-                              const isSelected = selectedChordIndices.has(index);
-
-                              return (
-                                <div
-                                  key={entry.entryId}
-                                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${
-                                    isDragging ? 'opacity-50 border-slate-400' : 'border-slate-300'
-                                  } ${
-                                    isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:bg-slate-50'
-                                  }`}
-                                  draggable
-                                  onDragStart={() => handleChordDragStart(index)}
-                                  onDragOver={(e) => handleChordDragOver(e, index)}
-                                  onDragEnd={handleChordDragEnd}
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleNotebookPlay(entry.entryId);
-                                    }}
-                                    className="w-6 h-6 rounded-full bg-emerald-500 hover:bg-emerald-600 transition-colors shadow-sm hover:scale-110 flex items-center justify-center"
-                                    title="Play chord"
-                                  >
-                                    <svg className="w-3 h-3 text-white ml-0.5" fill="currentColor" viewBox="0 0 16 16">
-                                      <path d="M3 2v12l10-6L3 2z" />
-                                    </svg>
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    onClick={(e) => handleChordClick(index, e)}
-                                    onDoubleClick={(e) => {
-                                      e.stopPropagation();
-                                      setExpandedChordId(entry.entryId === expandedChordId ? null : entry.entryId);
-                                    }}
-                                    className="text-sm font-semibold text-slate-700 hover:text-blue-600 transition-colors"
-                                    title="Click to select, double-click to edit, Cmd/Ctrl+click for multi-select"
-                                  >
-                                    {entry.chord.label}
-                                  </button>
-
-                                  {entry.measures > 1 && (
-                                    <span className="text-xs text-slate-500">
-                                      {entry.measures}m
-                                    </span>
-                                  )}
-                                </div>
-                              );
+                              ...
                             })}
-                          </div>
+                          </div> */}
 
                           {selectedNoteDetails ? (
                             <div className="mt-4 rounded-lg border border-blue-200 bg-white/80 p-4 shadow-sm">
@@ -3098,18 +3076,8 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Chord Matrix - shown below pentagram when open */}
-            <div className={`border-t border-slate-200 bg-white p-4 ${isChordMatrixOpen ? '' : 'hidden'}`}>
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-slate-800">Chord Matrix</h3>
-                <button
-                  type="button"
-                  onClick={() => setIsChordMatrixOpen(false)}
-                  className="text-slate-500 hover:text-slate-700 text-xl font-bold px-2"
-                >
-                  ✕
-                </button>
-              </div>
+            {/* Chord Matrix - hidden per user request */}
+            <div className="hidden">
               <ChordDiagram
                 ref={diagramRef}
                 onChordTriggered={handleChordTriggered}

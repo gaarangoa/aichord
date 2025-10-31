@@ -9,7 +9,6 @@ import remarkBreaks from 'remark-breaks';
 import type { ChordDiagramHandle, ChordDiagramProps, ChordTriggerEvent } from '@/components/ChordDiagram';
 import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
-import ChordMatrixModal from '@/components/ChordMatrixModal';
 import ConversationsDrawer from '@/components/ConversationsDrawer';
 import {
   deleteSession,
@@ -113,8 +112,9 @@ const MARKDOWN_COMPONENTS: MarkdownComponents = {
       {children}
     </pre>
   ),
-  code: ({ inline, className, children, ...props }) =>
-    inline ? (
+  code: ({ className, children, ...props }: { className?: string; children?: ReactNode }) => {
+    const inline = !className;
+    return inline ? (
       <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[13px] text-slate-800" {...props}>
         {children}
       </code>
@@ -122,7 +122,8 @@ const MARKDOWN_COMPONENTS: MarkdownComponents = {
       <code className={className} {...props}>
         {children}
       </code>
-    ),
+    );
+  },
   a: ({ children, href }) => (
     <a href={href ?? undefined} className="text-blue-600 underline hover:text-blue-500" target="_blank" rel="noreferrer">
       {children}
@@ -273,6 +274,10 @@ export default function Home() {
   const [octaveTranspose, setOctaveTranspose] = useState<number>(initialSessionRef.current?.octaveTranspose ?? 0); // Octave transposition (-2 to +2)
   const [transposeDisplay, setTransposeDisplay] = useState<boolean>(initialSessionRef.current?.transposeDisplay ?? false); // If true, also transpose the display (default: transpose sound only)
   const [draggingChordIndex, setDraggingChordIndex] = useState<number | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
+  const [selectedChordIndices, setSelectedChordIndices] = useState<Set<number>>(new Set());
   const [relativeVelocity, setRelativeVelocity] = useState<number>(initialSessionRef.current?.relativeVelocity ?? 45); // Target relative velocity (default 45)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChordMatrixOpen, setIsChordMatrixOpen] = useState(false);
@@ -1629,6 +1634,105 @@ export default function Home() {
     setDraggingChordIndex(null);
   }, []);
 
+  // Selection handlers for pentagram
+  const handleSelectionMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    // Don't start selection if clicking on a button or draggable element
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'BUTTON' || target.closest('button') || target.draggable) {
+      return;
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setIsSelecting(true);
+    setSelectionStart({ x, y });
+    setSelectionEnd({ x, y });
+  }, []);
+
+  const handleSelectionMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isSelecting || !selectionStart) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setSelectionEnd({ x, y });
+  }, [isSelecting, selectionStart]);
+
+  const handleSelectionMouseUp = useCallback(() => {
+    if (!isSelecting || !selectionStart || !selectionEnd) return;
+
+    setIsSelecting(false);
+
+    // Calculate selection bounds
+    const left = Math.min(selectionStart.x, selectionEnd.x);
+    const right = Math.max(selectionStart.x, selectionEnd.x);
+    const top = Math.min(selectionStart.y, selectionEnd.y);
+    const bottom = Math.max(selectionStart.y, selectionEnd.y);
+
+    // Calculate which chords fall within the selection
+    // Chord labels are positioned at beat * beatSpacing - 10, and are about 30px tall
+    const beatSpacing = 30;
+    const chordLabelTop = 120 + 32; // Staff height + margin to chord labels area
+    const chordLabelHeight = 30;
+
+    let accumulatedBeats = 0;
+    const selected = new Set<number>();
+
+    chordNotebook.forEach((entry, index) => {
+      // For each note in the entry, check if any label position falls in selection
+      if (entry.noteSequence && entry.noteSequence.length > 0) {
+        const firstNoteInMeasure = entry.noteSequence[0];
+        const labelX = (accumulatedBeats + firstNoteInMeasure.beat) * beatSpacing - 10;
+        const labelRight = labelX + 50; // Approximate label width
+
+        // Check if label overlaps with selection box
+        if (labelX <= right && labelRight >= left &&
+            chordLabelTop <= bottom && (chordLabelTop + chordLabelHeight) >= top) {
+          selected.add(index);
+        }
+      }
+
+      accumulatedBeats += entry.measures * 4;
+    });
+
+    setSelectedChordIndices(selected);
+  }, [isSelecting, selectionStart, selectionEnd, chordNotebook]);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedChordIndices.size === 0) return;
+
+    setChordNotebook(prev => {
+      return prev.filter((_, index) => !selectedChordIndices.has(index));
+    });
+
+    // Clear selection after deletion
+    setSelectedChordIndices(new Set());
+    setSelectionStart(null);
+    setSelectionEnd(null);
+  }, [selectedChordIndices]);
+
+  // Keyboard event listener for Delete key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedChordIndices.size > 0) {
+        // Prevent deleting if user is typing in an input field
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          return;
+        }
+
+        e.preventDefault();
+        handleDeleteSelected();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedChordIndices, handleDeleteSelected]);
+
   const handlePlaySequence = useCallback(async () => {
     if (chordNotebook.length === 0) return;
 
@@ -2062,6 +2166,16 @@ export default function Home() {
                         return basePos + octaveOffset;
                       };
 
+                      type BeamSegment = {
+                        startX: number;
+                        startY: number;
+                        endX: number;
+                        endY: number;
+                        beamCount: number;
+                        stemUp: boolean;
+                        highlight: boolean;
+                      };
+
                       // Staff lines (5 lines)
                       const STAFF_LINE_COUNT = 5;
                       const LINE_SPACING = 10; // pixels between lines
@@ -2086,71 +2200,149 @@ export default function Home() {
                       }
 
                       // Helper function to render note symbol based on duration
-                      const renderNoteSymbol = (duration: NoteDuration, yPos: number, xPos: number, isPlaying: boolean) => {
+                      const STEM_HEIGHT = 40;
+                      const STEM_THICKNESS = 2;
+
+                      const getNoteHeadWidth = (duration: NoteDuration): number =>
+                        duration === 'whole' ? 16 : 12;
+
+                      const getNoteHeadHeight = (duration: NoteDuration): number =>
+                        duration === 'whole' ? 10 : 7;
+
+                      const getBeamLevel = (duration: NoteDuration): number => {
+                        switch (duration) {
+                          case 'sixteenth':
+                            return 2;
+                          case 'eighth':
+                          case 'dotted-eighth':
+                            return 1;
+                          default:
+                            return 0;
+                        }
+                      };
+
+                      type NoteGlyphGeometry = {
+                        headWidth: number;
+                        headHeight: number;
+                        headLeft: number;
+                        headTop: number;
+                        stemLeft: number;
+                        stemTop: number;
+                        stemBottom: number;
+                        centerY: number;
+                        stemUp: boolean;
+                      };
+
+                      const computeNoteGeometry = (duration: NoteDuration, centerY: number, stemUp: boolean): NoteGlyphGeometry => {
+                        const headWidth = getNoteHeadWidth(duration);
+                        const headHeight = getNoteHeadHeight(duration);
+                        const headLeft = -headWidth / 2;
+                        const headTop = centerY - headHeight / 2;
+                        const stemCenterOffset = stemUp ? headWidth / 2 - 0.5 : -headWidth / 2 + 0.5;
+                        const stemLeft = stemCenterOffset - STEM_THICKNESS / 2;
+                        const stemTop = stemUp ? centerY - STEM_HEIGHT : centerY - 1;
+                        const stemBottom = stemTop + STEM_HEIGHT;
+
+                        return {
+                          headWidth,
+                          headHeight,
+                          headLeft,
+                          headTop,
+                          stemLeft,
+                          stemTop,
+                          stemBottom,
+                          centerY,
+                          stemUp,
+                        };
+                      };
+
+                      const renderNoteSymbol = (
+                        duration: NoteDuration,
+                        geometry: NoteGlyphGeometry,
+                        isPlaying: boolean,
+                        options?: { skipFlag?: boolean }
+                      ) => {
                         const isFilled = ['quarter', 'eighth', 'sixteenth', 'dotted-quarter', 'dotted-eighth'].includes(duration);
                         const hasFlag = ['eighth', 'sixteenth', 'dotted-eighth'].includes(duration);
                         const hasStem = duration !== 'whole';
                         const hasDot = duration.startsWith('dotted-');
-                        const stemHeight = 35;
-                        const stemUp = yPos < 74; // Stem direction based on position
+                        const skipFlag = options?.skipFlag ?? false;
+                        const { headWidth, headHeight, headLeft, headTop, stemLeft, stemTop, stemBottom, centerY, stemUp } = geometry;
 
-                        const playColor = '#ef4444'; // Bright red for playing
-                        const normalColor = '#000';
+                        const playColor = '#ef4444';
+                        const normalColor = '#111827';
+                        const noteColor = isPlaying ? playColor : normalColor;
+                        const accentColor = isPlaying ? '#fb7185' : '#334155';
+                        const fillAccent = isPlaying ? '#fda4af' : '#64748b';
+                        const fillColor = isFilled
+                          ? `linear-gradient(145deg, ${noteColor} 0%, ${fillAccent} 65%, ${noteColor} 98%)`
+                          : `linear-gradient(145deg, rgba(255,255,255,0.98) 5%, rgba(226,232,240,0.75) 60%, rgba(255,255,255,0.95) 95%)`;
+                        const borderWidth = duration === 'whole' ? 1.8 : 1.6;
+                        const headShadow = isPlaying
+                          ? '0 0 10px rgba(239, 68, 68, 0.35)'
+                          : isFilled
+                            ? '0 1px 2px rgba(15, 23, 42, 0.45), inset -0.5px -0.5px 0 rgba(255, 255, 255, 0.35)'
+                            : '0 1px 2px rgba(15, 23, 42, 0.32), inset -0.8px -0.8px 0 rgba(148, 163, 184, 0.45)';
 
                         return (
                           <>
-                            {/* Note head */}
                             <div
-                              className={`absolute rounded-full transition-all ${isPlaying ? 'scale-125' : ''}`}
+                              className={`absolute transition-transform ${isPlaying ? 'scale-105' : ''}`}
                               style={{
-                                top: `${yPos - 4}px`,
-                                left: `${xPos}px`,
-                                width: '11px',
-                                height: '8px',
-                                backgroundColor: isFilled ? (isPlaying ? playColor : normalColor) : 'transparent',
-                                border: isFilled ? 'none' : `2px solid ${isPlaying ? playColor : normalColor}`,
-                                transform: 'rotate(-20deg)',
-                                boxShadow: isPlaying ? '0 0 8px rgba(239, 68, 68, 0.6)' : 'none',
+                                top: `${headTop}px`,
+                                left: `${headLeft}px`,
+                                width: `${headWidth}px`,
+                                height: `${headHeight}px`,
+                                background: fillColor,
+                                border: `${borderWidth}px solid ${noteColor}`,
+                                borderRadius: '50% / 58%',
+                                transform: 'rotate(-18deg) scaleX(1.04)',
+                                boxShadow: headShadow,
+                                willChange: 'transform',
                               }}
                             />
 
-                            {/* Stem */}
                             {hasStem && (
                               <div
-                                className="absolute transition-all"
+                                className="absolute"
                                 style={{
-                                  top: stemUp ? `${yPos - stemHeight}px` : `${yPos}px`,
-                                  left: stemUp ? `${xPos + 9}px` : `${xPos}px`,
-                                  width: isPlaying ? '2px' : '1.5px',
-                                  height: `${stemHeight}px`,
-                                  backgroundColor: isPlaying ? playColor : normalColor,
+                                  top: `${stemTop}px`,
+                                  left: `${stemLeft}px`,
+                                  width: `${STEM_THICKNESS}px`,
+                                  height: `${STEM_HEIGHT}px`,
+                                  background: `linear-gradient(to bottom, ${noteColor} 0%, ${isPlaying ? '#b91c1c' : '#0f172a'} 100%)`,
+                                  borderRadius: STEM_THICKNESS,
+                                  boxShadow: isPlaying ? '0 0 6px rgba(239, 68, 68, 0.35)' : '0 1px 1px rgba(15, 23, 42, 0.4)',
                                 }}
                               />
                             )}
 
-                            {/* Flag for eighth/sixteenth notes */}
-                            {hasFlag && (
+                            {hasFlag && !skipFlag && (
                               <div
-                                className="absolute text-xl font-bold transition-all"
+                                className="absolute"
                                 style={{
-                                  top: stemUp ? `${yPos - stemHeight - 5}px` : `${yPos + stemHeight - 15}px`,
-                                  left: stemUp ? `${xPos + 7}px` : `${xPos - 3}px`,
-                                  color: isPlaying ? playColor : normalColor,
-                                  transform: stemUp ? 'scaleY(-1)' : 'none',
+                                  top: stemUp ? `${stemTop - 4}px` : `${stemBottom - 10}px`,
+                                  left: stemUp ? `${stemLeft + STEM_THICKNESS - 0.5}px` : `${stemLeft - 6}px`,
+                                  width: '14px',
+                                  height: '12px',
+                                  background: `linear-gradient(125deg, ${noteColor} 0%, ${accentColor} 60%)`,
+                                  borderRadius: stemUp ? '0 12px 12px 12px' : '12px 0 12px 12px',
+                                  transform: stemUp ? 'rotate(20deg)' : 'rotate(200deg)',
+                                  boxShadow: isPlaying ? '0 0 6px rgba(239, 68, 68, 0.35)' : '0 1px 1px rgba(15, 23, 42, 0.4)',
                                 }}
-                              >
-                                {duration === 'sixteenth' ? '♬' : '♪'}
-                              </div>
+                              />
                             )}
 
-                            {/* Dot for dotted notes */}
                             {hasDot && (
                               <div
-                                className="absolute w-1.5 h-1.5 rounded-full transition-all"
+                                className="absolute rounded-full"
                                 style={{
-                                  top: `${yPos - 1}px`,
-                                  left: `${xPos + 15}px`,
-                                  backgroundColor: isPlaying ? playColor : normalColor,
+                                  top: `${centerY - 2}px`,
+                                  left: `${headLeft + headWidth + 6}px`,
+                                  width: '5px',
+                                  height: '5px',
+                                  backgroundColor: noteColor,
+                                  boxShadow: '0 0 2px rgba(15, 23, 42, 0.25)',
                                 }}
                               />
                             )}
@@ -2159,6 +2351,8 @@ export default function Home() {
                       };
 
                       // Show empty state if no chords
+                      const beamSegments: BeamSegment[] = [];
+
                       if (fullNotes.length === 0) {
                         return (
                           <div className="relative" style={{ minWidth: '800px', height: '120px' }}>
@@ -2171,7 +2365,7 @@ export default function Home() {
                                   style={{
                                     top: `${lineY}px`,
                                     left: 0,
-                                  width: '100%'
+                                    width: '100%',
                                   }}
                                 />
                               ))}
@@ -2180,8 +2374,137 @@ export default function Home() {
                         );
                       }
 
+                      const noteElements = fullNotes.map((note, noteIdx) => {
+                        const isPlaying = currentPlaybackBeat !== null &&
+                          currentPlaybackBeat >= note.beat &&
+                          currentPlaybackBeat < note.beat + durationToBeats(note.duration);
+
+                        const xPosition = note.beat * beatSpacing;
+                        const position = getNotePosition(note.note, note.octave);
+                        const yPos = STAFF_BOTTOM_Y - position * HALF_STEP;
+                        const stemUp = yPos < 74;
+                        const geometry = computeNoteGeometry(note.duration, yPos, stemUp);
+                        const prevNote = fullNotes[noteIdx - 1];
+                        const nextNote = fullNotes[noteIdx + 1];
+                        const beamLevel = getBeamLevel(note.duration);
+                        const prevBeamLevel = prevNote ? getBeamLevel(prevNote.duration) : 0;
+                        const nextBeamLevel = nextNote ? getBeamLevel(nextNote.duration) : 0;
+                        const sameMeasurePrev = prevNote ? Math.floor(prevNote.beat / 4) === Math.floor(note.beat / 4) : false;
+                        const sameMeasureNext = nextNote ? Math.floor(nextNote.beat / 4) === Math.floor(note.beat / 4) : false;
+                        const beamFromPrev = beamLevel > 0 && prevBeamLevel > 0 && sameMeasurePrev;
+                        const beamToNext = beamLevel > 0 && nextBeamLevel > 0 && sameMeasureNext;
+                        const skipFlag = beamFromPrev || beamToNext;
+
+                        if (beamToNext && nextNote) {
+                          const nextPosition = getNotePosition(nextNote.note, nextNote.octave);
+                          const nextYPos = STAFF_BOTTOM_Y - nextPosition * HALF_STEP;
+                          const nextStemUp = nextYPos < 74;
+                          const nextGeometry = computeNoteGeometry(nextNote.duration, nextYPos, nextStemUp);
+                          const startStemX = xPosition + geometry.stemLeft + STEM_THICKNESS / 2;
+                          const endStemX = nextNote.beat * beatSpacing + nextGeometry.stemLeft + STEM_THICKNESS / 2;
+                          const startStemY = geometry.stemUp ? geometry.stemTop + 1 : geometry.stemBottom - 1;
+                          const endStemY = nextGeometry.stemUp ? nextGeometry.stemTop + 1 : nextGeometry.stemBottom - 1;
+                          const beamStemUp = geometry.stemUp && nextGeometry.stemUp;
+                          const beamStemDown = !geometry.stemUp && !nextGeometry.stemUp;
+                          const beamOrientation = beamStemUp ? true : beamStemDown ? false : geometry.stemUp;
+                          const nextIsPlaying = currentPlaybackBeat !== null &&
+                            currentPlaybackBeat >= nextNote.beat &&
+                            currentPlaybackBeat < nextNote.beat + durationToBeats(nextNote.duration);
+
+                          beamSegments.push({
+                            startX: startStemX,
+                            startY: startStemY,
+                            endX: endStemX,
+                            endY: endStemY,
+                            beamCount: Math.min(beamLevel, nextBeamLevel),
+                            stemUp: beamOrientation,
+                            highlight: isPlaying || nextIsPlaying,
+                          });
+                        }
+
+                        return (
+                          <div key={noteIdx} className="absolute" style={{ left: `${xPosition}px` }} data-note-beat={note.beat}>
+                            {renderNoteSymbol(note.duration, geometry, isPlaying, { skipFlag })}
+
+                            {/* Ledger lines for notes outside staff */}
+                            {yPos < STAFF_TOP_Y &&
+                              Array.from(
+                                { length: Math.ceil((STAFF_TOP_Y - yPos) / LINE_SPACING) },
+                                (_, i) => (
+                                  <div
+                                    key={`ledger-above-${i}`}
+                                    className="absolute border-t border-slate-400"
+                                    style={{
+                                      top: `${STAFF_TOP_Y - (i + 1) * LINE_SPACING}px`,
+                                      left: '-4px',
+                                      width: '20px',
+                                    }}
+                                  />
+                                )
+                              )}
+                            {yPos > STAFF_BOTTOM_Y &&
+                              Array.from(
+                                { length: Math.ceil((yPos - STAFF_BOTTOM_Y) / LINE_SPACING) },
+                                (_, i) => (
+                                  <div
+                                    key={`ledger-below-${i}`}
+                                    className="absolute border-t border-slate-400"
+                                    style={{
+                                      top: `${STAFF_BOTTOM_Y + (i + 1) * LINE_SPACING}px`,
+                                      left: '-4px',
+                                      width: '20px',
+                                    }}
+                                  />
+                                )
+                              )}
+                          </div>
+                        );
+                      });
+
+                      const beamElements = beamSegments.flatMap((beam, idx) => {
+                        const dx = beam.endX - beam.startX;
+                        const dy = beam.endY - beam.startY;
+                        const length = Math.max(Math.hypot(dx, dy), 6);
+                        const angleRad = Math.atan2(dy, dx);
+                        const gradient = beam.highlight
+                          ? 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)'
+                          : 'linear-gradient(90deg, #1f2937 0%, #0f172a 100%)';
+
+                        return Array.from({ length: beam.beamCount }).map((_, layerIdx) => {
+                          const offset = layerIdx * 6;
+                          const direction = beam.stemUp ? 1 : -1;
+                          const offsetX = -Math.sin(angleRad) * offset * direction;
+                          const offsetY = Math.cos(angleRad) * offset * direction;
+
+                          return (
+                            <div
+                              key={`beam-${idx}-${layerIdx}`}
+                              className="absolute rounded-full"
+                              style={{
+                                left: `${beam.startX + offsetX}px`,
+                                top: `${beam.startY + offsetY}px`,
+                                width: `${length}px`,
+                                height: '4px',
+                                background: gradient,
+                                transformOrigin: 'left center',
+                                transform: `rotate(${angleRad}rad)`,
+                                boxShadow: beam.highlight ? '0 0 10px rgba(239, 68, 68, 0.35)' : '0 1px 2px rgba(15, 23, 42, 0.45)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                          );
+                        });
+                      });
+
                       return (
-                        <div className="relative" style={{ minWidth: `${totalWidth}px` }}>
+                        <div
+                          className="relative"
+                          style={{ minWidth: `${totalWidth}px` }}
+                          onMouseDown={handleSelectionMouseDown}
+                          onMouseMove={handleSelectionMouseMove}
+                          onMouseUp={handleSelectionMouseUp}
+                          onMouseLeave={handleSelectionMouseUp}
+                        >
                           {/* Staff lines - extended across all notes */}
                           <div className="relative" style={{ height: '120px' }}>
                             {staffLinePositions.map((lineY, idx) => (
@@ -2254,61 +2577,10 @@ export default function Home() {
                               );
                             })}
 
-                            {/* Notes */}
-                            <div className="absolute top-0 left-0 w-full">
-                              {fullNotes.map((note, noteIdx) => {
-                                // Check if this note is currently being played (playback line is on or past it)
-                                const isPlaying = currentPlaybackBeat !== null &&
-                                  currentPlaybackBeat >= note.beat &&
-                                  currentPlaybackBeat < note.beat + durationToBeats(note.duration);
-
-                                // Position based on beat number
-                                const xPosition = note.beat * beatSpacing;
-
-                                const position = getNotePosition(note.note, note.octave);
-                                // Middle line (B4) corresponds to position 4; each step raises the note by half a line.
-                                const yPos = STAFF_BOTTOM_Y - position * HALF_STEP;
-
-                                return (
-                                  <div key={noteIdx} className="absolute" style={{ left: `${xPosition}px` }} data-note-beat={note.beat}>
-                                    {/* Render note symbol */}
-                                    {renderNoteSymbol(note.duration, yPos, 0, isPlaying)}
-
-                                    {/* Ledger lines for notes outside staff */}
-                                    {yPos < STAFF_TOP_Y &&
-                                      Array.from(
-                                        { length: Math.ceil((STAFF_TOP_Y - yPos) / LINE_SPACING) },
-                                        (_, i) => (
-                                          <div
-                                            key={`ledger-above-${i}`}
-                                            className="absolute border-t border-slate-400"
-                                            style={{
-                                              top: `${STAFF_TOP_Y - (i + 1) * LINE_SPACING}px`,
-                                              left: '-4px',
-                                              width: '20px',
-                                            }}
-                                          />
-                                        )
-                                      )}
-                                    {yPos > STAFF_BOTTOM_Y &&
-                                      Array.from(
-                                        { length: Math.ceil((yPos - STAFF_BOTTOM_Y) / LINE_SPACING) },
-                                        (_, i) => (
-                                          <div
-                                            key={`ledger-below-${i}`}
-                                            className="absolute border-t border-slate-400"
-                                            style={{
-                                              top: `${STAFF_BOTTOM_Y + (i + 1) * LINE_SPACING}px`,
-                                              left: '-4px',
-                                              width: '20px',
-                                            }}
-                                          />
-                                        )
-                                      )}
-                                  </div>
-                                );
-                              })}
-                            </div>
+                          {/* Notes */}
+                          <div className="absolute top-0 left-0 w-full">
+                            {noteElements}
+                            {beamElements}
                           </div>
 
                           {/* Chord labels at the bottom - only show on first note of each measure */}
@@ -2340,11 +2612,12 @@ export default function Home() {
                                 const chordIndex = chordNotebook.findIndex(entry => entry.chord.label === item.label);
                                 const isDragging = draggingChordIndex === chordIndex;
                                 const isRest = chordEntry?.isSilence;
+                                const isSelected = selectedChordIndices.has(chordIndex);
 
                                 return (
                                   <div
                                     key={idx}
-                                    className={`absolute ${isDragging ? 'opacity-50' : ''}`}
+                                    className={`absolute ${isDragging ? 'opacity-50' : ''} ${isSelected ? 'ring-2 ring-blue-500 rounded' : ''}`}
                                     style={{ left: `${item.beat * beatSpacing - 10}px` }}
                                     draggable={true}
                                     onDragStart={() => handleChordDragStart(chordIndex)}
@@ -2387,6 +2660,30 @@ export default function Home() {
                             })()}
                           </div>
                         </div>
+
+                          {/* Selection rectangle */}
+                          {(isSelecting || selectionStart) && selectionStart && selectionEnd && (() => {
+                            const left = Math.min(selectionStart.x, selectionEnd.x);
+                            const top = Math.min(selectionStart.y, selectionEnd.y);
+                            const width = Math.abs(selectionEnd.x - selectionStart.x);
+                            const height = Math.abs(selectionEnd.y - selectionStart.y);
+
+                            return (
+                              <div
+                                className="absolute pointer-events-none"
+                                style={{
+                                  left: `${left}px`,
+                                  top: `${top}px`,
+                                  width: `${width}px`,
+                                  height: `${height}px`,
+                                  border: '2px dashed #3b82f6',
+                                  backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                  zIndex: 1000,
+                                }}
+                              />
+                            );
+                          })()}
+                      </div>
                       );
                     })()}
           </div>
@@ -2658,10 +2955,30 @@ export default function Home() {
                 })()}
               </div>
             </div>
+
+            {/* Chord Matrix - shown below pentagram when open */}
+            <div className={`border-t border-slate-200 bg-white p-4 ${isChordMatrixOpen ? '' : 'hidden'}`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-slate-800">Chord Matrix</h3>
+                <button
+                  type="button"
+                  onClick={() => setIsChordMatrixOpen(false)}
+                  className="text-slate-500 hover:text-slate-700 text-xl font-bold px-2"
+                >
+                  ✕
+                </button>
+              </div>
+              <ChordDiagram
+                ref={diagramRef}
+                onChordTriggered={handleChordTriggered}
+                initialControls={diagramControls}
+                onControlsChange={handleDiagramControlsChange}
+              />
+            </div>
           </section>
 
           {/* Creative Chat - Fills 100% of remaining screen */}
-          <section className="flex-1 flex flex-col bg-white min-h-0">
+          <section className={`flex-1 flex flex-col bg-white min-h-0 ${isChordMatrixOpen ? 'hidden' : ''}`}>
 
             <div
               ref={messagesContainerRef}
@@ -2816,19 +3133,6 @@ export default function Home() {
         isSending={isSending}
         onSendSessionSummary={handleSendSessionSummary}
       />
-
-      {/* Chord Matrix Modal */}
-      <ChordMatrixModal
-        isOpen={isChordMatrixOpen}
-        onClose={() => setIsChordMatrixOpen(false)}
-      >
-        <ChordDiagram
-          ref={diagramRef}
-          onChordTriggered={handleChordTriggered}
-          initialControls={diagramControls}
-          onControlsChange={handleDiagramControlsChange}
-        />
-      </ChordMatrixModal>
     </div>
   );
 }

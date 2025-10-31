@@ -29,33 +29,39 @@ export default function AlphaTabNotation({
   onReady,
 }: AlphaTabNotationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const initRef = useRef(false);
+  const apiRef = useRef<AlphaTabApi | null>(null);
+  const hasInitializedRef = useRef(false);
 
+  // Initialize API and load notation ONCE
   useEffect(() => {
-    // Only initialize once
-    if (initRef.current || !containerRef.current || !alphaTex) {
+    if (hasInitializedRef.current || !containerRef.current || !alphaTex) {
       return;
     }
-    initRef.current = true;
+    hasInitializedRef.current = true;
 
-    console.log('[AlphaTab] Initializing once...');
+    console.log('[AlphaTab] Initializing once and loading notation...');
 
     const settings = new Settings();
     settings.core.engine = 'svg';
     settings.core.fontDirectory = '/alphatab/font/';
     settings.core.useWorkers = false;
 
-    const api = new AlphaTabApi(containerRef.current, settings);
+    // Page layout mode - wraps like a music sheet
+    settings.display.layoutMode = 'page';
+    settings.display.scale = 0.8;
 
-    console.log('[AlphaTab] Loading notation...');
+    const api = new AlphaTabApi(containerRef.current, settings);
+    apiRef.current = api;
+
+    // Load the initial notation
     api.tex(alphaTex);
 
     if (onReady) {
       onReady(api);
     }
 
-    // No cleanup - let it live for the entire page lifecycle
-  }, []); // Empty deps - only run once ever
+    console.log('[AlphaTab] Initialization complete');
+  }, []); // Only once ever
 
   if (!alphaTex) {
     return (

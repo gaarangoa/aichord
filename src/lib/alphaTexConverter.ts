@@ -103,9 +103,8 @@ export function convertToAlphaTex(
     return '';
   }
 
-  let alphaTex = `\\title "${title}"\n`;
-  alphaTex += `\\tempo ${bpm}\n`;
-  alphaTex += `.\n`;
+  // Start with just the track marker, no title or tempo
+  let alphaTex = `.\n`;
 
   const notesByBeat = new Map<number, NoteData[]>();
   notes.forEach(note => {

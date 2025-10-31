@@ -24,3 +24,19 @@ body {
   color: var(--foreground);
   font-family: var(--font-poppins), "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+
+/* alphaTab basic styles */
+.at-wrap {
+  position: relative;
+}
+
+.at-surface {
+  width: 100%;
+  overflow: hidden;
+}
+
+.at-surface svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}

@@ -184,7 +184,7 @@ export const useWebMidiChordSender = () => {
 
       const releaseDelay = Math.max(50, durationMs);
       const velocityByte = Math.max(1, Math.min(127, Math.round(velocity)));
-      const intervalGap = Math.max(10, Math.min(5000, Math.round(arpeggioIntervalMs)));
+      const intervalGap = Math.max(0, Math.min(5000, Math.round(arpeggioIntervalMs)));
       const timingJitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
       const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
 

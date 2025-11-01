@@ -108,8 +108,8 @@ const DEFAULT_CHORD_CONTROLS: ChordPlaybackControls = {
   baseOctave: 2,
   velocity: 56,
   velocityVariance: 10,
-  arpeggioIntervalMs: 1,
-  arpeggioTimingJitterPercent: 10,
+  arpeggioIntervalMs: 0,
+  arpeggioTimingJitterPercent: 0,
   useInternalAudio: true,
 };
 

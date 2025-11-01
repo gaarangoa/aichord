@@ -173,7 +173,7 @@ class StringEnsemble {
       const duration = Math.max(0.1, durationSeconds);
       const baseVelocity = Math.max(1, Math.min(127, Math.round(velocity)));
 
-      const intervalSeconds = Math.max(0.02, arpeggioIntervalMs / 1000);
+      const intervalSeconds = Math.max(0, arpeggioIntervalMs / 1000);
       const jitterRange = Math.max(0, Math.min(1, timingJitterPercent / 100));
       const velocityVarianceRange = Math.max(0, Math.min(100, velocityVariancePercent)) / 100;
       // All notes get the full hold duration
@@ -191,12 +191,11 @@ class StringEnsemble {
         const velocityOffset = Math.round((Math.random() * 2 - 1) * maxVariance);
         const noteVelocity = Math.max(1, Math.min(127, baseVelocity + velocityOffset));
         const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
-        const attackJitter = Math.random() * 0.03; // up to 30ms for subtle variation
 
         this.synth?.triggerAttackRelease(
           noteWithOctave,
           perNoteDuration,
-          nextTime + attackJitter,
+          nextTime,
           velocityScalar
         );
       });
@@ -241,14 +240,13 @@ class StringEnsemble {
         const velocityScalar = Math.max(0.05, Math.min(1, noteVelocity / 127));
 
         const attackTime = startTime + noteEvent.startOffset;
-        const attackJitter = Math.random() * 0.01; // up to 10ms for subtle variation
 
         console.log(`  [${idx}] ${noteWithOctave} @ ${noteEvent.startOffset}s (abs: ${attackTime.toFixed(3)}), duration: ${noteEvent.duration}s`);
 
         this.synth?.triggerAttackRelease(
           noteWithOctave,
           noteEvent.duration,
-          attackTime + attackJitter,
+          attackTime,
           velocityScalar
         );
       });

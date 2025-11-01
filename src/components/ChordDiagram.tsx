@@ -140,7 +140,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(
   const [baseOctave, setBaseOctave] = useState<number>(initialControls?.baseOctave ?? 2);
   const [velocity, setVelocity] = useState<number>(initialControls?.velocity ?? 56);
   const [velocityVariance, setVelocityVariance] = useState<number>(initialControls?.velocityVariance ?? 10);
-  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(initialControls?.arpeggioIntervalMs ?? 1);
+  const [arpeggioIntervalMs, setArpeggioIntervalMs] = useState<number>(initialControls?.arpeggioIntervalMs ?? 0);
   const [arpeggioTimingJitterPercent, setArpeggioTimingJitterPercent] = useState<number>(
     initialControls?.arpeggioTimingJitterPercent ?? 10
   );
@@ -281,7 +281,7 @@ const ChordDiagram = forwardRef<ChordDiagramHandle, ChordDiagramProps>(
 
   const handleArpeggioIntervalChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const next = Number(event.target.value);
-    if (Number.isNaN(next) || next <= 0) {
+    if (Number.isNaN(next) || next < 0) {
       return;
     }
     setArpeggioIntervalMs(next);
@@ -639,7 +639,7 @@ return (
             Arpeggio Interval (ms)
             <input
               type="number"
-              min="1"
+              min="0"
               max="250"
               value={arpeggioIntervalMs}
               onChange={handleArpeggioIntervalChange}

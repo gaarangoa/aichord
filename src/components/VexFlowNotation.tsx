@@ -13,6 +13,7 @@ interface VexNote {
   chordLabel?: string;
   velocities?: number[];
   isRest?: boolean;
+  sourceNoteIds?: string[];
 }
 
 interface VexFlowNotationProps {
@@ -20,6 +21,8 @@ interface VexFlowNotationProps {
   onNoteClick?: (noteIndex: number) => void;
   onRenderComplete?: () => void;
   currentPlaybackBeat?: number | null;
+  selectedNoteIndices?: Set<number>;
+  onNoteElementsChange?: (elements: Array<{ index: number; element: SVGElement }>) => void;
 }
 
 // Helper function to get duration in beats
@@ -37,14 +40,26 @@ function getDurationBeats(duration: NoteDuration): number {
   }
 }
 
-export default function VexFlowNotation({ notes, onNoteClick, onRenderComplete, currentPlaybackBeat }: VexFlowNotationProps) {
+export default function VexFlowNotation({
+  notes,
+  onNoteClick,
+  onRenderComplete,
+  currentPlaybackBeat,
+  selectedNoteIndices,
+  onNoteElementsChange,
+}: VexFlowNotationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
   const noteElementsRef = useRef<SVGElement[]>([]);
   const pixelsPerBeatRef = useRef<number>(50); // Default: 200px per measure / 4 beats
 
   useEffect(() => {
-    if (!containerRef.current || notes.length === 0) return;
+    if (!containerRef.current || notes.length === 0) {
+      if (onNoteElementsChange) {
+        onNoteElementsChange([]);
+      }
+      return;
+    }
 
     try {
       // Clear previous render
@@ -135,16 +150,22 @@ export default function VexFlowNotation({ notes, onNoteClick, onRenderComplete, 
       // Draw beams
       beams.forEach(beam => beam.setContext(context).draw());
 
-      // Add chord labels
+      // Add chord labels positioned over the actual note heads
       notes.forEach((note, idx) => {
-        if (note.chordLabel) {
-          // Calculate approximate x position for this note
-          const noteX = 50 + (idx * (totalWidth - 60) / notes.length);
-          context.save();
-          context.setFont('Arial', 12, 'bold');
-          context.fillText(note.chordLabel, noteX, staveY - 10);
-          context.restore();
+        if (!note.chordLabel) return;
+        const staveNote = vexNotes[idx];
+        if (!staveNote) return;
+
+        const absoluteX = staveNote.getAbsoluteX();
+
+        context.save();
+        context.setFont('Arial', 12, 'bold');
+        context.setFillStyle('#1f2937');
+        if (context.setTextAlign) {
+          context.setTextAlign('center');
         }
+        context.fillText(note.chordLabel, absoluteX, staveY - 12);
+        context.restore();
       });
 
       // Store note elements and add click handlers
@@ -159,6 +180,15 @@ export default function VexFlowNotation({ notes, onNoteClick, onRenderComplete, 
             (elem as SVGElement).style.cursor = 'pointer';
           });
         }
+
+        if (onNoteElementsChange) {
+          onNoteElementsChange(
+            noteElementsRef.current.map((element, index) => ({
+              index,
+              element,
+            }))
+          );
+        }
       }
 
       onRenderComplete?.();
@@ -169,48 +199,47 @@ export default function VexFlowNotation({ notes, onNoteClick, onRenderComplete, 
     // Cleanup
     return () => {
       rendererRef.current = null;
+      noteElementsRef.current = [];
+      if (onNoteElementsChange) {
+        onNoteElementsChange([]);
+      }
     };
-  }, [notes, onNoteClick, onRenderComplete]);
+  }, [notes, onNoteClick, onRenderComplete, onNoteElementsChange]);
 
   // Highlight notes based on playback position and auto-scroll
   useEffect(() => {
-    if (!noteElementsRef.current.length || currentPlaybackBeat === null || currentPlaybackBeat === undefined) {
-      // Clear all highlights when not playing
-      noteElementsRef.current.forEach(elem => {
-        const noteheads = elem.querySelectorAll('.vf-notehead');
-        noteheads.forEach(notehead => {
-          (notehead as SVGElement).style.fill = '#000';
-        });
-      });
+    if (!noteElementsRef.current.length) {
       return;
     }
 
-    // Find which note(s) should be highlighted
-    notes.forEach((note, index) => {
-      const elem = noteElementsRef.current[index];
-      if (!elem) return;
+    const hasPlayback = currentPlaybackBeat !== null && currentPlaybackBeat !== undefined;
 
+    noteElementsRef.current.forEach((elem, index) => {
       const noteheads = elem.querySelectorAll('.vf-notehead');
-      const isPlaying = currentPlaybackBeat >= note.beat &&
-                        currentPlaybackBeat < note.beat + getDurationBeats(note.duration);
+      const note = notes[index];
+      const isPlaying =
+        hasPlayback &&
+        note !== undefined &&
+        currentPlaybackBeat >= note.beat &&
+        currentPlaybackBeat < note.beat + getDurationBeats(note.duration);
+      const isSelected = selectedNoteIndices?.has(index) ?? false;
+      const fill = isSelected ? '#ef4444' : isPlaying ? '#3b82f6' : '#000';
 
       noteheads.forEach(notehead => {
-        (notehead as SVGElement).style.fill = isPlaying ? '#3b82f6' : '#000';
+        (notehead as SVGElement).style.fill = fill;
         (notehead as SVGElement).style.transition = 'fill 0.1s ease';
       });
     });
 
-    // Auto-scroll to keep the playback position visible
-    if (containerRef.current) {
+    if (hasPlayback && containerRef.current) {
       const scrollContainer = containerRef.current.parentElement;
       if (scrollContainer) {
         const scrollTarget = currentPlaybackBeat * pixelsPerBeatRef.current;
-        // Center the playback position in the viewport
         const targetScroll = Math.max(0, scrollTarget - scrollContainer.clientWidth / 2);
         scrollContainer.scrollLeft = targetScroll;
       }
     }
-  }, [currentPlaybackBeat, notes]);
+  }, [currentPlaybackBeat, notes, selectedNoteIndices]);
 
   return (
     <div

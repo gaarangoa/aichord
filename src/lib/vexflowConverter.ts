@@ -8,6 +8,7 @@ interface NoteData {
   duration: NoteDuration;
   chordLabel?: string;
   velocity?: number;
+  id?: string;
 }
 
 interface VexNote {
@@ -17,6 +18,7 @@ interface VexNote {
   chordLabel?: string;
   velocities?: number[]; // Velocity for each note
   isRest?: boolean; // True if this is a rest
+  sourceNoteIds?: string[];
 }
 
 /**
@@ -76,6 +78,9 @@ export function convertToVexFlow(notes: NoteData[]): VexNote[] {
       chordLabel,
       velocities,
       isRest: false,
+      sourceNoteIds: notesAtBeat
+        .map(n => n.id)
+        .filter((id): id is string => typeof id === 'string'),
     });
   });
 
@@ -105,6 +110,7 @@ export function addRestsToVexFlow(
           duration: 'whole',
           beat: currentBeat,
           isRest: true,
+          sourceNoteIds: [],
         });
         currentBeat += 4;
       }
@@ -122,6 +128,7 @@ export function addRestsToVexFlow(
           duration: restDur,
           beat: currentBeat,
           isRest: true,
+          sourceNoteIds: [],
         });
         currentBeat = note.beat;
       }

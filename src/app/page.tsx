@@ -11,6 +11,7 @@ import Sidebar from '@/components/Sidebar';
 import SettingsModal from '@/components/SettingsModal';
 import ConversationsDrawer from '@/components/ConversationsDrawer';
 import VexFlowNotation from '@/components/VexFlowNotation';
+import ChordMatrixModal from '@/components/ChordMatrixModal';
 import { convertToVexFlow, addRestsToVexFlow } from '@/lib/vexflowConverter';
 import {
   deleteSession,
@@ -111,6 +112,12 @@ const DEFAULT_CHORD_CONTROLS: ChordPlaybackControls = {
   arpeggioTimingJitterPercent: 10,
   useInternalAudio: true,
 };
+
+const VEX_PIXELS_PER_MEASURE = 200;
+const VEX_PIXELS_PER_BEAT = VEX_PIXELS_PER_MEASURE / 4;
+const VEX_STAFF_LEFT_MARGIN = 10;
+const CHORD_LABEL_TRACK_TOP = 160;
+const MIN_CHORD_LABEL_WIDTH_PX = 48;
 
 const MARKDOWN_COMPONENTS: MarkdownComponents = {
   p: ({ children }) => <p className="mb-1 last:mb-0 leading-relaxed">{children}</p>,
@@ -228,8 +235,6 @@ const NOTE_NAME_TO_VALUE: Record<string, number> = {
 };
 
 const NOTE_NAMES: string[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-
-const PITCH_OPTIONS = ['C', 'C#', 'Db', 'D', 'D#', 'Eb', 'E', 'F', 'F#', 'Gb', 'G', 'G#', 'Ab', 'A', 'A#', 'Bb', 'B'];
 
 const DURATION_LABELS: Record<NoteDuration, string> = {
   'sixteenth': '1/16',
@@ -395,6 +400,10 @@ export default function Home() {
   const [transposeDisplay, setTransposeDisplay] = useState<boolean>(initialSessionRef.current?.transposeDisplay ?? false); // If true, also transpose the display (default: transpose sound only)
   const [draggingChordIndex, setDraggingChordIndex] = useState<number | null>(null);
   const [selectedChordIndices, setSelectedChordIndices] = useState<Set<number>>(new Set());
+  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(new Set());
+  const [isSelectingRegion, setIsSelectingRegion] = useState(false);
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
   const [relativeVelocity, setRelativeVelocity] = useState<number>(initialSessionRef.current?.relativeVelocity ?? 45); // Target relative velocity (default 45)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isChordMatrixOpen, setIsChordMatrixOpen] = useState(false);
@@ -411,6 +420,10 @@ export default function Home() {
   });
   const hasLoadedSessionsRef = useRef(false);
   const sessionInitRef = useRef<Map<string, boolean>>(new Map());
+  const chordOverlayRef = useRef<HTMLDivElement | null>(null);
+  const chordElementRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const noteElementRefs = useRef<Map<number, SVGElement>>(new Map());
+  const additiveSelectionRef = useRef(false);
 
   const applyNotebookUpdate = useCallback((updater: (prev: ChordNotebookEntry[]) => ChordNotebookEntry[]) => {
     setChordNotebook(prev => {
@@ -1180,7 +1193,7 @@ export default function Home() {
             noteName: note.note,
             displayOctave,
             duration: note.duration,
-            chordLabel: entry.chord.label,
+            chordLabel: index === 0 ? entry.chord.label : undefined,
             link: {
               id: note.id,
               entryId: entry.entryId,
@@ -1211,9 +1224,9 @@ export default function Home() {
       duration: item.duration,
       chordLabel: item.chordLabel,
       velocity: item.sourceNote.velocity,
+      id: item.link.id,
     }));
 
-    const noteLinks = sortedItems.map(item => item.link);
     const noteInfoById = new Map<string, { entryId: string; noteIndex: number; note: NoteEvent; absoluteBeat: number }>();
 
     sortedItems.forEach(item => {
@@ -1228,16 +1241,87 @@ export default function Home() {
     const hasContent = alphaTexNotes.length > 0 || silences.length > 0;
     const vexNotesWithoutRests = hasContent ? convertToVexFlow(alphaTexNotes) : [];
     const vexNotes = hasContent ? addRestsToVexFlow(vexNotesWithoutRests) : [];
+    const noteIdToVexIndex = new Map<string, number>();
+
+    vexNotes.forEach((note, index) => {
+      note.sourceNoteIds?.forEach(id => {
+        noteIdToVexIndex.set(id, index);
+      });
+    });
 
     return {
       vexNotes,
-      noteLinks,
       noteInfoById,
       hasContent,
+      noteIdToVexIndex,
     };
-  }, [chordNotebook, transposeDisplay, octaveTranspose, bpm]);
+  }, [chordNotebook, transposeDisplay, octaveTranspose]);
 
-  const { vexNotes, noteLinks, noteInfoById, hasContent } = notationState;
+  const { vexNotes, noteInfoById, hasContent, noteIdToVexIndex } = notationState;
+
+  const selectedVexNoteIndices = useMemo(() => {
+    if (selectedNoteIds.size === 0) {
+      return new Set<number>();
+    }
+    const indices = new Set<number>();
+    selectedNoteIds.forEach(id => {
+      const index = noteIdToVexIndex.get(id);
+      if (index !== undefined) {
+        indices.add(index);
+      }
+    });
+    return indices;
+  }, [selectedNoteIds, noteIdToVexIndex]);
+
+  const chordLayout = useMemo(() => {
+    const positions: Array<{
+      index: number;
+      startBeat: number;
+      widthBeats: number;
+      startPx: number;
+      centerPx: number;
+      widthPx: number;
+      label: string;
+      isSilence: boolean;
+      entryId: string;
+    }> = [];
+
+    let accumulatedBeats = 0;
+
+    chordNotebook.forEach((entry, index) => {
+      const entryBeats = entry.measures * 4;
+      const startBeat = accumulatedBeats;
+      const startPx = startBeat * VEX_PIXELS_PER_BEAT;
+      const widthPx = Math.max(entryBeats * VEX_PIXELS_PER_BEAT, MIN_CHORD_LABEL_WIDTH_PX);
+      const centerPx = startPx + widthPx / 2;
+
+      positions.push({
+        index,
+        startBeat,
+        widthBeats: entryBeats,
+        startPx,
+        centerPx,
+        widthPx,
+        label: entry.isSilence
+          ? `${entry.measures} ${entry.measures === 1 ? 'bar rest' : 'bars rest'}`
+          : entry.chord.label,
+        isSilence: Boolean(entry.isSilence),
+        entryId: entry.entryId,
+      });
+
+      accumulatedBeats += entryBeats;
+    });
+
+    const totalBeats = Math.max(accumulatedBeats, 4);
+    const measuresCount = Math.ceil(totalBeats / 4) || 1;
+    const totalWidth = Math.max(measuresCount * VEX_PIXELS_PER_MEASURE, 600);
+
+    return {
+      positions,
+      totalWidth,
+      pixelsPerBeat: VEX_PIXELS_PER_BEAT,
+    };
+  }, [chordNotebook]);
 
   useEffect(() => {
     if (!selectedNote) return;
@@ -2076,6 +2160,8 @@ export default function Home() {
     setExpandedChordId(null);
     setCurrentPlaybackBeat(null);
     setSelectedNote(null);
+    setSelectedChordIndices(new Set());
+    setSelectedNoteIds(new Set());
   }, [replaceNotebook]);
 
   const handleStartEditChord = useCallback((entry: ChordNotebookEntry) => {
@@ -2154,13 +2240,187 @@ export default function Home() {
     setDraggingChordIndex(null);
   }, []);
 
+  const handleNoteElementsChange = useCallback((entries: Array<{ index: number; element: SVGElement }>) => {
+    const map = new Map<number, SVGElement>();
+    entries.forEach(({ index, element }) => {
+      map.set(index, element);
+    });
+    noteElementRefs.current = map;
+  }, []);
+
+  const handleSelectionMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const container = chordOverlayRef.current;
+    if (!container) return;
+
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-chord-handle]') || target.draggable) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    additiveSelectionRef.current = e.metaKey || e.ctrlKey;
+    if (!additiveSelectionRef.current) {
+      setSelectedChordIndices(new Set());
+      setSelectedNoteIds(new Set());
+      setSelectedNote(null);
+    }
+
+    setIsSelectingRegion(true);
+    setSelectionStart({ x, y });
+    setSelectionEnd({ x, y });
+
+    e.preventDefault();
+  }, []);
+
+  const handleSelectionMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isSelectingRegion || !selectionStart) return;
+    const container = chordOverlayRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setSelectionEnd({ x, y });
+  }, [isSelectingRegion, selectionStart]);
+
+  const finalizeSelection = useCallback(() => {
+    if (!isSelectingRegion) {
+      setSelectionStart(null);
+      setSelectionEnd(null);
+      return;
+    }
+
+    const container = chordOverlayRef.current;
+    if (!container || !selectionStart || !selectionEnd) {
+      setIsSelectingRegion(false);
+      setSelectionStart(null);
+      setSelectionEnd(null);
+      additiveSelectionRef.current = false;
+      return;
+    }
+
+    const minDistance = 3;
+    const moved =
+      Math.abs(selectionEnd.x - selectionStart.x) > minDistance ||
+      Math.abs(selectionEnd.y - selectionStart.y) > minDistance;
+
+    if (!moved) {
+      if (!additiveSelectionRef.current) {
+        setSelectedChordIndices(new Set());
+        setSelectedNoteIds(new Set());
+        setSelectedNote(null);
+      }
+    } else {
+      const rect = container.getBoundingClientRect();
+      const left = Math.min(selectionStart.x, selectionEnd.x);
+      const right = Math.max(selectionStart.x, selectionEnd.x);
+      const top = Math.min(selectionStart.y, selectionEnd.y);
+      const bottom = Math.max(selectionStart.y, selectionEnd.y);
+
+      setSelectedChordIndices(prev => {
+        const next = additiveSelectionRef.current ? new Set(prev) : new Set<number>();
+        chordElementRefs.current.forEach((element, index) => {
+          if (!element) return;
+          const elementRect = element.getBoundingClientRect();
+          const elementLeft = elementRect.left - rect.left;
+          const elementRight = elementRect.right - rect.left;
+          const elementTop = elementRect.top - rect.top;
+          const elementBottom = elementRect.bottom - rect.top;
+
+          const overlaps =
+            elementLeft <= right &&
+            elementRight >= left &&
+            elementTop <= bottom &&
+            elementBottom >= top;
+
+          if (overlaps) {
+            next.add(index);
+          }
+        });
+        return next;
+      });
+
+      const nextSelectedNoteIds = additiveSelectionRef.current ? new Set(selectedNoteIds) : new Set<string>();
+      const affectedChordIndices = new Set<number>();
+
+      noteElementRefs.current.forEach((element, index) => {
+        const vexNote = vexNotes[index];
+        if (!element || !vexNote || vexNote.isRest || !vexNote.sourceNoteIds?.length) {
+          return;
+        }
+        const elementRect = element.getBoundingClientRect();
+        const elementLeft = elementRect.left - rect.left;
+        const elementRight = elementRect.right - rect.left;
+        const elementTop = elementRect.top - rect.top;
+        const elementBottom = elementRect.bottom - rect.top;
+
+        const overlaps =
+          elementLeft <= right &&
+          elementRight >= left &&
+          elementTop <= bottom &&
+          elementBottom >= top;
+
+        if (overlaps) {
+          vexNote.sourceNoteIds.forEach(id => nextSelectedNoteIds.add(id));
+
+          // Map this vex note back to the owning chord index
+          vexNote.sourceNoteIds.forEach(id => {
+            const noteInfo = noteInfoById.get(id);
+            if (noteInfo) {
+              const chordIndex = chordNotebook.findIndex(entry => entry.entryId === noteInfo.entryId);
+              if (chordIndex >= 0) {
+                const entry = chordNotebook[chordIndex];
+                if (entry.noteSequence && entry.noteSequence.length > 0) {
+                  affectedChordIndices.add(chordIndex);
+                }
+              }
+            }
+          });
+        }
+      });
+
+      if (nextSelectedNoteIds.size > 0 && affectedChordIndices.size > 0) {
+        setSelectedChordIndices(prev => {
+          const next = additiveSelectionRef.current ? new Set(prev) : new Set<number>();
+          affectedChordIndices.forEach(index => next.add(index));
+          return next;
+        });
+      }
+
+      setSelectedNoteIds(nextSelectedNoteIds);
+
+      setSelectedNote(null);
+    }
+
+    setIsSelectingRegion(false);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+    additiveSelectionRef.current = false;
+  }, [isSelectingRegion, selectionStart, selectionEnd, vexNotes, noteInfoById, chordNotebook, selectedNoteIds]);
+
+  const handleSelectionMouseUp = useCallback(() => {
+    finalizeSelection();
+  }, [finalizeSelection]);
+
+  const handleSelectionMouseLeave = useCallback(() => {
+    if (isSelectingRegion) {
+      finalizeSelection();
+    }
+  }, [finalizeSelection, isSelectingRegion]);
+
   // Handle clicking on chord labels to select/deselect them
   const handleChordClick = useCallback((index: number, e: React.MouseEvent) => {
     e.stopPropagation();
 
+    const isAdditive = e.metaKey || e.ctrlKey;
+
     setSelectedChordIndices(prev => {
       const newSelection = new Set(prev);
-      if (e.metaKey || e.ctrlKey) {
+      if (isAdditive) {
         // Cmd/Ctrl+click: toggle selection
         if (newSelection.has(index)) {
           newSelection.delete(index);
@@ -2174,21 +2434,69 @@ export default function Home() {
       }
       return newSelection;
     });
+
+    if (!isAdditive) {
+      setSelectedNoteIds(new Set());
+      setSelectedNote(null);
+    }
   }, []);
 
-  const handleDeleteSelected = useCallback(() => {
+  const handleDeleteSelectedChords = useCallback(() => {
     if (selectedChordIndices.size === 0) return;
 
     applyNotebookUpdate(prev => prev.filter((_, index) => !selectedChordIndices.has(index)));
 
     // Clear selection after deletion
     setSelectedChordIndices(new Set());
+    setSelectionStart(null);
+    setSelectionEnd(null);
+    setIsSelectingRegion(false);
   }, [applyNotebookUpdate, selectedChordIndices]);
+
+  const handleDeleteSelectedNotes = useCallback(() => {
+    if (selectedNoteIds.size === 0) return;
+
+    applyNotebookUpdate(prev => {
+      let modified = false;
+      const nextNotebook: ChordNotebookEntry[] = [];
+
+      prev.forEach(entry => {
+        if (!entry.noteSequence || entry.noteSequence.length === 0) {
+          nextNotebook.push(entry);
+          return;
+        }
+
+        const filteredSequence = entry.noteSequence.filter(note => !selectedNoteIds.has(note.id));
+        if (filteredSequence.length === entry.noteSequence.length) {
+          nextNotebook.push(entry);
+          return;
+        }
+
+        modified = true;
+
+        if (filteredSequence.length > 0) {
+          nextNotebook.push({ ...entry, noteSequence: filteredSequence });
+        }
+      });
+
+      if (!modified) {
+        return prev;
+      }
+
+      return nextNotebook;
+    });
+
+    setSelectedNoteIds(new Set());
+    setSelectedNote(null);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+    setIsSelectingRegion(false);
+  }, [applyNotebookUpdate, selectedNoteIds]);
 
   // Keyboard event listener for Delete key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedChordIndices.size > 0) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && (selectedChordIndices.size > 0 || selectedNoteIds.size > 0)) {
         // Prevent deleting if user is typing in an input field
         const target = e.target as HTMLElement;
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -2196,13 +2504,14 @@ export default function Home() {
         }
 
         e.preventDefault();
-        handleDeleteSelected();
+        handleDeleteSelectedChords();
+        handleDeleteSelectedNotes();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedChordIndices, handleDeleteSelected]);
+  }, [selectedChordIndices, selectedNoteIds, handleDeleteSelectedChords, handleDeleteSelectedNotes]);
 
   const handlePlaySequence = useCallback(async () => {
     if (chordNotebook.length === 0) return;
@@ -2547,7 +2856,7 @@ export default function Home() {
                 )}
               </div>
             </div>
-            <div className="overflow-x-auto" ref={musicSheetRef}>
+            <div className="w-full overflow-x-auto" ref={musicSheetRef}>
               <div className="bg-slate-50 p-4 rounded inline-block min-w-full">
                                           {!hasContent ? (
                         <div className="text-center py-8 text-slate-500">
@@ -2555,112 +2864,129 @@ export default function Home() {
                         </div>
                       ) : (
                         <div className="w-full">
-                          <div className="w-full overflow-x-auto">
-                            <VexFlowNotation
-                              notes={vexNotes}
-                              currentPlaybackBeat={currentPlaybackBeat}
-                              onNoteClick={(noteIndex) => {
-                                const clickedNote = vexNotes[noteIndex];
-                                if (clickedNote && !clickedNote.isRest && diagramRef.current) {
-                                  // Convert VexFlow note format to MIDI format
-                                  const midiNotes = clickedNote.notes.map((noteKey, idx) => {
-                                    // Parse note format like "C/4" or "C#/4"
-                                    const match = noteKey.match(/^([A-G][#b]?)\/(\d+)$/);
-                                    if (match) {
-                                      // Use the velocity from the note data, or default to 96
-                                      const velocity = clickedNote.velocities?.[idx] || 96;
-                                      return {
-                                        note: match[1],
-                                        octave: parseInt(match[2], 10) + octaveTranspose,
-                                        startOffset: 0,
-                                        duration: 1, // 1 second duration for clicked notes
-                                        velocity: velocity,
-                                      };
-                                    }
-                                    return null;
-                                  }).filter(n => n !== null);
+                          <div className="w-full">
+                            <div
+                              className="relative inline-block"
+                              style={{ minWidth: `${chordLayout.totalWidth}px` }}
+                              ref={(element) => {
+                                chordOverlayRef.current = element;
+                              }}
+                              onMouseDown={handleSelectionMouseDown}
+                              onMouseMove={handleSelectionMouseMove}
+                              onMouseUp={handleSelectionMouseUp}
+                              onMouseLeave={handleSelectionMouseLeave}
+                            >
+                              <VexFlowNotation
+                                notes={vexNotes}
+                                currentPlaybackBeat={currentPlaybackBeat}
+                                onNoteClick={(noteIndex) => {
+                                  const clickedNote = vexNotes[noteIndex];
+                                  if (clickedNote && !clickedNote.isRest && diagramRef.current) {
+                                    // Convert VexFlow note format to MIDI format
+                                    const midiNotes = clickedNote.notes.map((noteKey, idx) => {
+                                      // Parse note format like "C/4" or "C#/4"
+                                      const match = noteKey.match(/^([A-G][#b]?)\/(\d+)$/);
+                                      if (match) {
+                                        // Use the velocity from the note data, or default to 96
+                                        const velocity = clickedNote.velocities?.[idx] || 96;
+                                        return {
+                                          note: match[1],
+                                          octave: parseInt(match[2], 10) + octaveTranspose,
+                                          startOffset: 0,
+                                          duration: 1, // 1 second duration for clicked notes
+                                          velocity: velocity,
+                                        };
+                                      }
+                                      return null;
+                                    }).filter(n => n !== null);
 
-                                  if (midiNotes.length > 0) {
-                                    // Use the average velocity as the base velocity
-                                    const avgVelocity = Math.round(
-                                      midiNotes.reduce((sum, n) => sum + n.velocity, 0) / midiNotes.length
-                                    );
-                                    diagramRef.current.sendMidiNoteSequence(midiNotes, {
-                                      velocity: avgVelocity,
-                                      velocityVariancePercent: 0,
-                                    });
+                                    if (midiNotes.length > 0) {
+                                      // Use the average velocity as the base velocity
+                                      const avgVelocity = Math.round(
+                                        midiNotes.reduce((sum, n) => sum + n.velocity, 0) / midiNotes.length
+                                      );
+                                      diagramRef.current.sendMidiNoteSequence(midiNotes, {
+                                        velocity: avgVelocity,
+                                        velocityVariancePercent: 0,
+                                      });
+                                    }
                                   }
-                                }
                               }}
                               onRenderComplete={() => {
                                 console.log('VexFlow render complete');
                               }}
+                              selectedNoteIndices={selectedVexNoteIndices}
+                              onNoteElementsChange={handleNoteElementsChange}
                             />
+                              <div className="pointer-events-none absolute inset-0">
+                                {chordLayout.positions.map(position => (
+                                  <div
+                                    key={position.entryId}
+                                    data-chord-handle
+                                    ref={(element) => {
+                                      if (element) {
+                                        chordElementRefs.current.set(position.index, element);
+                                      } else {
+                                        chordElementRefs.current.delete(position.index);
+                                      }
+                                    }}
+                                    className={`pointer-events-auto absolute flex items-center justify-center rounded-md transition ${
+                                      selectedChordIndices.has(position.index)
+                                        ? 'border border-blue-300 bg-white/90 px-2 py-1 shadow-sm ring-2 ring-blue-200'
+                                        : 'border border-transparent bg-white/60 px-2 py-1'
+                                    }`}
+                                    style={{
+                                      left: `${VEX_STAFF_LEFT_MARGIN + position.startPx}px`,
+                                      top: `${CHORD_LABEL_TRACK_TOP}px`,
+                                      width: `${position.widthPx}px`,
+                                      transform: 'translateY(-50%)',
+                                      cursor: 'grab',
+                                      visibility: 'hidden',
+                                    }}
+                                    draggable
+                                    onDragStart={(event) => {
+                                      event.stopPropagation();
+                                      if (event.dataTransfer) {
+                                        event.dataTransfer.setData('text/plain', position.entryId);
+                                        event.dataTransfer.effectAllowed = 'move';
+                                      }
+                                      handleChordDragStart(position.index);
+                                    }}
+                                    onDragOver={(event) => handleChordDragOver(event, position.index)}
+                                    onDragEnd={(event) => {
+                                      event.stopPropagation();
+                                      handleChordDragEnd();
+                                    }}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={(event) => handleChordClick(position.index, event)}
+                                      className={`text-[11px] font-semibold ${
+                                        chordNotebook[position.index]?.isSilence
+                                          ? 'italic text-slate-500'
+                                          : 'text-slate-700'
+                                      } hover:text-blue-600`}
+                                    >
+                                      {position.label}
+                                    </button>
+                                  </div>
+                                ))}
+                                {isSelectingRegion && selectionStart && selectionEnd && (
+                                  <div
+                                    className="absolute rounded border border-blue-400 bg-blue-200/20"
+                                    style={{
+                                      left: `${Math.min(selectionStart.x, selectionEnd.x)}px`,
+                                      top: `${Math.min(selectionStart.y, selectionEnd.y)}px`,
+                                      width: `${Math.abs(selectionEnd.x - selectionStart.x)}px`,
+                                      height: `${Math.abs(selectionEnd.y - selectionStart.y)}px`,
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            </div>
                           </div>
 
-                          <div className="mt-4 flex flex-wrap items-center gap-3 px-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                Tools
-                              </span>
-                              <button
-                                type="button"
-                                onClick={addNoteAfterSelected}
-                                disabled={!selectedNoteDetails}
-                                className="rounded border border-blue-300 bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-200 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-                              >
-                                + Note
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleAddSilence(1)}
-                                className="rounded border border-emerald-300 bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-200"
-                              >
-                                + Rest
-                              </button>
-                            </div>
-
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                                Duration
-                              </span>
-                              {QUICK_DURATION_BUTTONS.map((duration) => (
-                                <button
-                                  key={duration}
-                                  type="button"
-                                  onClick={() => updateSelectedNote({ duration })}
-                                  disabled={!selectedNoteDetails}
-                                  className={`rounded px-2 py-1 text-xs font-medium transition ${
-                                    selectedNoteDetails?.note.duration === duration
-                                      ? 'bg-blue-600 text-white'
-                                      : 'border border-slate-300 text-slate-700 hover:bg-slate-100'
-                                  } disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400`}
-                                >
-                                  {DURATION_LABELS[duration]}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div className="ml-auto flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={handleUndo}
-                                disabled={undoStack.length === 0}
-                                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                              >
-                                Undo
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleRedo}
-                                disabled={redoStack.length === 0}
-                                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-                              >
-                                Redo
-                              </button>
-                            </div>
-                          </div>
-
+                          {/* Tools panel hidden per user request */}
                           {/* Chord boxes hidden - user requested to remove them */}
                           {/* <div className="flex flex-wrap gap-3 mt-4 px-2">
                             {chordNotebook.map((entry, index) => {
@@ -2668,141 +2994,7 @@ export default function Home() {
                             })}
                           </div> */}
 
-                          {selectedNoteDetails ? (
-                            <div className="mt-4 rounded-lg border border-blue-200 bg-white/80 p-4 shadow-sm">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div>
-                                  <h4 className="text-sm font-semibold text-slate-800">Note Properties</h4>
-                                  <p className="text-xs text-slate-500">
-                                    Beat {selectedNoteDetails.note.beat.toFixed(2)}
-                                    {typeof selectedNoteDetails.absoluteBeat === 'number' && (
-                                      <>
-                                        {' '}(
-                                        abs {selectedNoteDetails.absoluteBeat.toFixed(2)}
-                                        )
-                                      </>
-                                    )}
-                                    {' '}• Duration {DURATION_LABELS[selectedNoteDetails.note.duration]} • Velocity {selectedNoteDetails.note.velocity}
-                                  </p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => shiftSelectedNote(1)}
-                                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-                                    title="Raise pitch one semitone (Shift+↑)"
-                                  >
-                                    +½ step
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => shiftSelectedNote(-1)}
-                                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-                                    title="Lower pitch one semitone (Shift+↓)"
-                                  >
-                                    −½ step
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={removeSelectedNote}
-                                    className="rounded border border-red-300 bg-red-100 px-2 py-1 text-xs font-medium text-red-700 transition hover:bg-red-200"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </div>
-
-                              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-xs font-semibold text-slate-600">Pitch</span>
-                                  <select
-                                    value={selectedNoteDetails.note.note}
-                                    onChange={(e) => updateSelectedNote({ note: e.target.value })}
-                                    className="rounded border border-slate-300 px-2 py-1 text-sm"
-                                  >
-                                    {!PITCH_OPTIONS.includes(selectedNoteDetails.note.note) && (
-                                      <option value={selectedNoteDetails.note.note}>{selectedNoteDetails.note.note}</option>
-                                    )}
-                                    {PITCH_OPTIONS.map((name) => (
-                                      <option key={name} value={name}>
-                                        {name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-xs font-semibold text-slate-600">Octave</span>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    max={8}
-                                    value={selectedNoteDetails.note.octave}
-                                    onChange={(e) => {
-                                      const next = parseInt(e.target.value, 10);
-                                      if (Number.isFinite(next)) {
-                                        updateSelectedNote({ octave: next });
-                                      }
-                                    }}
-                                    className="rounded border border-slate-300 px-2 py-1 text-sm"
-                                  />
-                                </label>
-
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-xs font-semibold text-slate-600">Beat</span>
-                                  <input
-                                    type="number"
-                                    step={0.25}
-                                    min={0}
-                                    value={selectedNoteDetails.note.beat}
-                                    onChange={(e) => {
-                                      const next = parseFloat(e.target.value);
-                                      if (Number.isFinite(next)) {
-                                        updateSelectedNote({ beat: Math.max(0, Number(next.toFixed(2))) });
-                                      }
-                                    }}
-                                    className="rounded border border-slate-300 px-2 py-1 text-sm"
-                                  />
-                                </label>
-
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-xs font-semibold text-slate-600">Duration</span>
-                                  <select
-                                    value={selectedNoteDetails.note.duration}
-                                    onChange={(e) => updateSelectedNote({ duration: e.target.value as NoteDuration })}
-                                    className="rounded border border-slate-300 px-2 py-1 text-sm"
-                                  >
-                                    {DURATION_ORDER.map((duration) => (
-                                      <option key={duration} value={duration}>
-                                        {DURATION_LABELS[duration]}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-
-                                <label className="flex flex-col gap-1">
-                                  <span className="text-xs font-semibold text-slate-600">Velocity</span>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={127}
-                                    value={selectedNoteDetails.note.velocity}
-                                    onChange={(e) => {
-                                      const next = parseInt(e.target.value, 10);
-                                      if (Number.isFinite(next)) {
-                                        updateSelectedNote({ velocity: clampVelocity(next) });
-                                      }
-                                    }}
-                                    className="rounded border border-slate-300 px-2 py-1 text-sm"
-                                  />
-                                </label>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="mt-4 rounded border border-dashed border-slate-300 bg-white/60 px-4 py-6 text-sm text-slate-500 text-center">
-                              Click a note on the staff to open editing controls.
-                            </div>
-                          )}
+                          {/* Note editing panel intentionally hidden */}
                         </div>
                       )}
 
@@ -3075,16 +3267,6 @@ export default function Home() {
                 })()}
               </div>
             </div>
-
-            {/* Chord Matrix - hidden per user request */}
-            <div className="hidden">
-              <ChordDiagram
-                ref={diagramRef}
-                onChordTriggered={handleChordTriggered}
-                initialControls={diagramControls}
-                onControlsChange={handleDiagramControlsChange}
-              />
-            </div>
           </section>
 
           {/* Creative Chat - Fills 100% of remaining screen */}
@@ -3193,12 +3375,24 @@ export default function Home() {
         onCreateSession={handleCreateSession}
         onDeleteSession={handleDeleteSession}
         onClearCurrentSession={handleClearCurrentSession}
-        onClose={() => setIsConversationsOpen(false)}
-      />
+      onClose={() => setIsConversationsOpen(false)}
+    />
 
-      {/* Modals */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
+    <ChordMatrixModal
+      isOpen={isChordMatrixOpen}
+      onClose={() => setIsChordMatrixOpen(false)}
+    >
+      <ChordDiagram
+        ref={diagramRef}
+        onChordTriggered={handleChordTriggered}
+        initialControls={diagramControls}
+        onControlsChange={handleDiagramControlsChange}
+      />
+    </ChordMatrixModal>
+
+    {/* Modals */}
+    <SettingsModal
+      isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         diagramRef={diagramRef}
         bpm={bpm}
